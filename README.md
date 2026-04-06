@@ -1,4 +1,4 @@
-# 加班时长计算系统
+# 加班时长计算系统（个人学习）
 
 一个基于 Node.js + Express + SQLite 的共享加班管理系统，支持多用户记录、公告投票、已读回执、公告图片上传、每日内容展示与 AI 工具导航。
 
@@ -21,25 +21,24 @@
 - 后端：Node.js + Express
 - 数据库：SQLite（better-sqlite3）
 
-## 环境要求（推荐生产标准）
+## 环境要求（Docker 部署）
 
 ### 必需环境
 
 - Linux 服务器（推荐 Ubuntu 22.04 LTS / Debian 12）
-- Node.js 20 LTS（建议 20.x，避免过新版本导致 `better-sqlite3` 编译兼容问题）
-- npm 10+
+- Docker Engine 24+
+- Docker Compose v2
 - Git
 
-### 反向代理与进程守护（推荐）
+### 推荐组件
 
-- Nginx（80/443 入口）
-- PM2（Node 进程守护、开机自启）
+- Caddy（容器方式运行，负责反向代理和 HTTPS）
+- 2 GB 内存及以上
+- 10 GB 磁盘及以上
 
-### 服务器最小配置建议
+### 关于 Node.js
 
-- CPU：1 核
-- 内存：1 GB（建议 2 GB）
-- 磁盘：10 GB+
+这个项目的部署不需要在宿主机直接安装 Node.js。构建镜像时会使用 `node:20-alpine`，因此只要服务器能正常运行 Docker 即可。仓库根目录需要有 `Dockerfile`，才能执行镜像构建。
 
 ## 配置项说明
 
@@ -48,16 +47,18 @@
 - `PORT`：服务监听端口，默认 `3000`
 - `DB_PATH`：SQLite 数据库路径，默认 `./data/overtime.db`
 - `ADMIN_PASSWORD`：管理员密码
-- `ADMIN_SECRET`：管理员 Token 签名密钥（生产务必更换）
+- `ADMIN_SECRET`：管理员 Token 签名密钥
 - `OLLAMA_BASE_URL`：Ollama 服务地址（可选）
 - `OLLAMA_MODEL`：默认 Ollama 模型（可选）
 
-生产环境必须至少修改：
+部署环境至少修改：
 
 - `ADMIN_PASSWORD`
 - `ADMIN_SECRET`
 
 ## 本地开发快速启动
+
+如果你只是本地调试代码，可以继续使用：
 
 ```bash
 npm install
@@ -66,125 +67,172 @@ npm start
 
 访问：`http://localhost:3000`
 
-## 生产部署流程（可直接照做）
+## Docker 部署流程（推荐）
 
-以下示例以 Ubuntu 22.04 为例，域名假设为 `overtime.example.com`。
+下面以 Ubuntu 22.04 为例，域名假设为 `overtime.example.com`。示例里使用：
 
-### 1. 安装系统依赖
+- 应用容器：`overtime-app`
+- Caddy 容器：`overtime-caddy`
+- Docker 网络：`web`
+
+### 1. 安装 Docker 和 Compose
 
 ```bash
 sudo apt update
-sudo apt install -y git curl nginx build-essential
+sudo apt install -y ca-certificates curl gnupg git
+curl -fsSL https://get.docker.com | sudo sh
+sudo systemctl enable docker
+sudo systemctl start docker
+docker version
+docker compose version
 ```
 
-说明：`build-essential` 用于 `better-sqlite3` 可能触发的本地编译。
-
-### 2. 安装 Node.js 20 LTS
-
-```bash
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-sudo apt install -y nodejs
-node -v
-npm -v
-```
-
-### 3. 拉取代码并安装依赖
+### 2. 拉取代码
 
 ```bash
 sudo mkdir -p /opt/overtime-app
 sudo chown -R $USER:$USER /opt/overtime-app
 cd /opt/overtime-app
 git clone <你的仓库地址> .
-npm install --omit=dev
 ```
 
-### 4. 配置环境变量
+### 3. 配置环境变量
 
-创建 `.env`：
+项目根目录放一个 `.env`，用于容器启动时注入参数：
 
 ```bash
 cat > .env << 'EOF'
 PORT=3000
-DB_PATH=./data/overtime.db
+DB_PATH=/app/data/overtime.db
 ADMIN_PASSWORD=请替换为强密码
 ADMIN_SECRET=请替换为足够随机的长字符串
-OLLAMA_BASE_URL=http://127.0.0.1:11434
-OLLAMA_MODEL=qwen3.5-uncensored:4b
+OLLAMA_BASE_URL=http://host.docker.internal:11434
+OLLAMA_MODEL=qwen3.5:2b
 EOF
 ```
 
-### 5. 安装并使用 PM2 守护进程
+说明：
+
+- `DB_PATH` 指向容器内数据目录
+- 如果 Ollama 也在宿主机上运行，建议应用容器启动时加上 `--add-host=host.docker.internal:host-gateway`
+- 然后把 `OLLAMA_BASE_URL` 保持为 `http://host.docker.internal:11434`
+- 部署环境必须替换 `ADMIN_PASSWORD` 和 `ADMIN_SECRET`
+
+### 4. 构建应用镜像
+
+你给出的构建命令可以直接使用：
 
 ```bash
-sudo npm install -g pm2
-cd /opt/overtime-app
-pm2 start server.js --name overtime-app
-pm2 save
-pm2 startup
+docker build -t overtime-calculator:1.0 .
 ```
 
-按 `pm2 startup` 输出提示执行一次 sudo 命令，完成开机自启。
-
-### 6. 配置 Nginx 反向代理
-
-创建配置：
+如果你的 Docker 版本提示 legacy builder 已弃用，可以改用 BuildKit：
 
 ```bash
-sudo tee /etc/nginx/sites-available/overtime-app > /dev/null << 'EOF'
-server {
-    listen 80;
-    server_name overtime.example.com;
+docker buildx build -t overtime-calculator:1.0 --load .
+```
 
-    location / {
-        proxy_pass http://127.0.0.1:3000;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
+### 5. 创建 Docker 网络
+
+```bash
+docker network create web
+```
+
+如果网络已存在，可以忽略报错。
+
+### 6. 启动应用容器
+
+```bash
+docker rm -f overtime-app 2>/dev/null || true
+docker run -d \
+  --name overtime-app \
+  --restart unless-stopped \
+  --network web \
+  --add-host=host.docker.internal:host-gateway \
+  --env-file .env \
+  -v /opt/overtime-app/data:/app/data \
+  overtime-calculator:1.0
+```
+
+说明：
+
+- 这里把数据库挂载到宿主机 `/opt/overtime-app/data`
+- 容器内部端口仍然是 `3000`
+
+### 7. 启动 Caddy 容器
+
+如果 Caddy 也是容器，建议单独放在同一个 `web` 网络里，通过容器名反代到应用容器。
+
+创建 `Caddyfile`：
+
+```bash
+cat > /opt/overtime-app/Caddyfile << 'EOF'
+overtime.example.com {
+    reverse_proxy overtime-app:3000
 }
 EOF
 ```
 
-启用并重载：
+启动 Caddy：
 
 ```bash
-sudo ln -sf /etc/nginx/sites-available/overtime-app /etc/nginx/sites-enabled/overtime-app
-sudo nginx -t
-sudo systemctl reload nginx
+docker rm -f overtime-caddy 2>/dev/null || true
+docker run -d \
+  --name overtime-caddy \
+  --restart unless-stopped \
+  --network web \
+  -p 80:80 \
+  -p 443:443 \
+  -v /opt/overtime-app/Caddyfile:/etc/caddy/Caddyfile \
+  -v /opt/overtime-app/caddy_data:/data \
+  -v /opt/overtime-app/caddy_config:/config \
+  caddy:2
 ```
 
-### 7. （推荐）启用 HTTPS
+Caddy 会自动申请和续期 HTTPS 证书，前提是：
 
-```bash
-sudo apt install -y certbot python3-certbot-nginx
-sudo certbot --nginx -d overtime.example.com
-```
+- 域名已解析到服务器公网 IP
+- 80 和 443 端口已放行
 
 ### 8. 验证部署成功
 
 ```bash
-pm2 status
-curl -I http://127.0.0.1:3000
+docker ps
+docker logs -f overtime-app
+docker logs -f overtime-caddy
+curl -I http://127.0.0.1
 curl -I https://overtime.example.com
 ```
 
-浏览器打开域名，确认页面可访问、公告和数据读写正常。
+浏览器打开域名，确认页面可访问、公告可以新增、图片可以上传、投票和已读功能正常。
 
-## 后续更新流程（生产）
+## 后续更新流程（Docker）
+
+应用更新时，通常按这个顺序：
 
 ```bash
 cd /opt/overtime-app
 git pull origin main
-npm install --omit=dev
-pm2 restart overtime-app
-pm2 status
+docker build -t overtime-calculator:1.0 .
+docker rm -f overtime-app
+docker run -d \
+  --name overtime-app \
+  --restart unless-stopped \
+  --network web \
+  --env-file .env \
+  -v /opt/overtime-app/data:/app/data \
+  overtime-calculator:1.0
 ```
+
+如果只改前端静态内容或 README，不影响镜像逻辑，也可以只更新文件而不重新构建。
 
 ## 数据备份与恢复
 
-默认数据库位置：`./data/overtime.db`
+SQLite 数据文件在挂载目录中：
+
+```text
+/opt/overtime-app/data/overtime.db
+```
 
 ### 备份
 
@@ -198,28 +246,60 @@ cp data/overtime.db backups/overtime-$(date +%F-%H%M%S).db
 
 ```bash
 cd /opt/overtime-app
-pm2 stop overtime-app
+docker rm -f overtime-app
 cp backups/你的备份文件.db data/overtime.db
-pm2 start overtime-app
+docker run -d \
+  --name overtime-app \
+  --restart unless-stopped \
+  --network web \
+  --env-file .env \
+  -v /opt/overtime-app/data:/app/data \
+  overtime-calculator:1.0
 ```
+
+## 运行参数说明
+
+- `PORT`：应用容器监听端口，默认 `3000`
+- `DB_PATH`：数据库文件路径，建议在容器中使用 `/app/data/overtime.db`
+- `ADMIN_PASSWORD`：管理员密码
+- `ADMIN_SECRET`：管理员 Token 密钥
+- `OLLAMA_BASE_URL`：Ollama 地址
+- `OLLAMA_MODEL`：默认 Ollama 模型
 
 ## 常见问题
 
-### 1) `better-sqlite3` 安装失败
+### 1) `docker build` 提示 legacy builder deprecated
 
-- 确保 Node 版本为 20 LTS
-- Linux 安装 `build-essential`
-- Windows 需安装 C++ 构建工具
+这是提示 Docker 旧构建器将弃用，不影响当前镜像构建成功。建议后续改用：
 
-### 2) 端口已占用
+```bash
+docker buildx build -t overtime-calculator:1.0 --load .
+```
 
-- 修改 `.env` 的 `PORT`
-- 或释放占用进程后重启 PM2
+### 2) `better-sqlite3` 安装失败
 
-### 3) 推送 GitHub 超时
+- 优先使用 Docker 构建，不要在宿主机上直接编译
+- 镜像基于 `node:20-alpine`，容器里会自动安装依赖
+- 如果你在宿主机单独开发，才需要额外装 C++ 构建工具
 
-- 常见为网络波动/代理配置问题
-- 可先用 `git ls-remote <repo-url>` 测试连通性
+### 3) Caddy 没有自动签证书
+
+- 确认域名已经解析到服务器
+- 确认 80/443 已放行
+- 查看 `docker logs overtime-caddy`
+
+### 4) Ollama 不通
+
+- 如果 Ollama 在宿主机上，容器里不应使用 `127.0.0.1`
+- 需要换成宿主机可达地址，或者把 Ollama 也放进 Docker 网络
+
+## 项目结构
+
+- `server.js`：后端 API、数据库初始化与业务逻辑
+- `app.js`：前端交互、渲染与事件处理
+- `index.html`：页面结构与样式
+- `ai-directory-data.js`：AI 工具导航数据
+- `.env`：运行参数与密钥配置（不要提交）
 
 ## 项目结构
 
