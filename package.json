@@ -1,0 +1,12 @@
+{
+  "name": "overtime-calculator-shared",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^9.6.0",
+    "express": "^4.21.2"
+  }
+}

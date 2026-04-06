@@ -1,0 +1,1750 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=0.9">
+    <title>加班时长计算系统 · 共享数据库版</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
+        }
+
+        :root {
+            --primary-color: #4361ee;
+            --primary-light: #e6f0ff;
+            --secondary-color: #3a0ca3;
+            --accent-color: #f72585;
+            --money-color: #4CAF50;
+            --light-color: #f8f9fa;
+            --dark-color: #212529;
+            --gray-color: #6c757d;
+            --border-radius: 12px;
+            --box-shadow: 0 6px 20px rgba(0, 0, 0, 0.08);
+            --transition: all 0.3s ease;
+            --card-bg: #ffffff;
+        }
+
+        body {
+            background: linear-gradient(135deg, #f5f7fb 0%, #eef1f7 100%);
+            background-size: cover;
+            background-position: center;
+            background-attachment: fixed;
+            color: var(--dark-color);
+            line-height: 1.6;
+            padding: 15px 90px;
+            min-height: 100vh;
+            font-size: 14px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .top-toolbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            flex-wrap: wrap;
+            gap: 15px;
+            margin-bottom: 10px;
+        }
+
+        .person-switch-bar {
+            background: var(--card-bg);
+            border-radius: 60px;
+            padding: 6px;
+            display: inline-flex;
+            gap: 10px;
+            box-shadow: var(--box-shadow);
+            flex-wrap: wrap;
+            width: 100%;
+            justify-content: center;
+            min-height: 62px;
+        }
+
+        .person-btn {
+            padding: 10px 28px;
+            border-radius: 40px;
+            font-weight: 700;
+            font-size: 1.05rem;
+            border: none;
+            background: #f1f3f7;
+            color: var(--gray-color);
+            cursor: pointer;
+            transition: var(--transition);
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .person-btn.active {
+            background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
+            color: white;
+            box-shadow: 0 4px 12px rgba(67, 97, 238, 0.3);
+        }
+
+        .person-btn:hover:not(.active), .secondary-btn:hover, .outline-btn:hover, .nav-btn:hover, .btn:hover {
+            transform: translateY(-2px);
+        }
+
+        .header-right {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+        }
+
+        .status-pill {
+            background: white;
+            border-radius: 999px;
+            padding: 10px 14px;
+            box-shadow: var(--box-shadow);
+            color: var(--gray-color);
+            font-weight: 600;
+        }
+
+        .compare-btn, .secondary-btn, .outline-btn {
+            background: white;
+            border: 2px solid var(--primary-color);
+            color: var(--primary-color);
+            padding: 10px 18px;
+            border-radius: 40px;
+            font-weight: 600;
+            transition: var(--transition);
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .secondary-btn {
+            border-color: #cbd5e1;
+            color: var(--secondary-color);
+        }
+
+        .outline-btn {
+            border-color: #f59e0b;
+            color: #b45309;
+        }
+
+        .compare-btn:hover, .secondary-btn:hover, .outline-btn:hover {
+            background: var(--primary-color);
+            color: white;
+            border-color: var(--primary-color);
+        }
+
+        .hint-card, .calendar-container, .overtime-container, .stats-container {
+            background-color: var(--card-bg);
+            border-radius: var(--border-radius);
+            box-shadow: var(--box-shadow);
+        }
+
+        .hint-card {
+            padding: 14px 18px;
+            margin-bottom: 18px;
+            color: #334155;
+            border: 1px solid #dbe4f0;
+            background: linear-gradient(135deg, #f8fbff 0%, #f4f8ff 100%);
+        }
+
+        .hint-title-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 6px;
+            flex-wrap: wrap;
+        }
+
+        .hint-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 10px;
+            border-radius: 999px;
+            background: rgba(67, 97, 238, 0.12);
+            color: var(--primary-color);
+            font-weight: 700;
+            font-size: 0.82rem;
+            border: 1px solid rgba(67, 97, 238, 0.2);
+        }
+
+        .hint-main {
+            color: #1f2937;
+            font-weight: 600;
+        }
+
+        .daily-panels {
+            display: grid;
+            grid-template-columns: 1.3fr 1fr;
+            gap: 18px;
+            margin-bottom: 18px;
+        }
+
+        .daily-media-toggle {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 10px;
+            background: rgba(255, 255, 255, 0.9);
+            border-radius: var(--border-radius);
+            box-shadow: var(--box-shadow);
+            padding: 12px 14px;
+            margin-bottom: 12px;
+        }
+
+        .daily-media-toggle .helper-text {
+            margin: 0;
+        }
+
+        .media-toggle-btn {
+            border: none;
+            border-radius: 999px;
+            background: linear-gradient(135deg, #dbeafe, #eff6ff);
+            color: #1d4ed8;
+            font-weight: 700;
+            font-size: 0.85rem;
+            padding: 8px 16px;
+            cursor: pointer;
+            box-shadow: 0 4px 10px rgba(29, 78, 216, 0.2);
+            transition: transform 0.2s ease, box-shadow 0.2s ease, filter 0.2s ease;
+        }
+
+        .media-toggle-btn:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 6px 14px rgba(29, 78, 216, 0.24);
+            filter: brightness(1.03);
+        }
+
+        .daily-media-section.is-hidden {
+            display: none;
+        }
+
+        .wallpaper-panel, .quote-panel {
+            background: rgba(255, 255, 255, 0.9);
+            border-radius: var(--border-radius);
+            box-shadow: var(--box-shadow);
+            padding: 16px;
+            backdrop-filter: blur(3px);
+        }
+
+        .panel-title {
+            font-weight: 800;
+            color: var(--secondary-color);
+            margin-bottom: 10px;
+        }
+
+        .wallpaper-toolbar {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        .wallpaper-meta {
+            color: var(--gray-color);
+            font-size: 0.84rem;
+            margin-bottom: 10px;
+            min-height: 20px;
+        }
+
+        .wallpaper-preview {
+            width: 100%;
+            aspect-ratio: 16 / 9;
+            border-radius: 10px;
+            overflow: hidden;
+            background: linear-gradient(135deg, #eef2ff 0%, #e2e8f0 100%);
+            border: 1px solid rgba(67, 97, 238, 0.18);
+            margin-bottom: 10px;
+        }
+
+        .wallpaper-preview img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: block;
+        }
+
+        .quote-content {
+            font-size: 1rem;
+            line-height: 1.8;
+            color: #1f2937;
+            margin-bottom: 8px;
+        }
+
+        .quote-from {
+            color: var(--gray-color);
+            font-size: 0.85rem;
+            text-align: right;
+        }
+
+        .ai-directory {
+            background: rgba(255, 255, 255, 0.9);
+            border-radius: var(--border-radius);
+            box-shadow: var(--box-shadow);
+            padding: 18px;
+            margin-bottom: 18px;
+        }
+
+        .ai-directory h3 {
+            color: var(--secondary-color);
+            margin-bottom: 8px;
+        }
+
+        .ai-directory-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 16px;
+            margin-top: 12px;
+        }
+
+        .ai-group-card {
+            background: #ffffff;
+            border: 1px solid #e4e9f5;
+            border-radius: 12px;
+            padding: 14px;
+        }
+
+        .ai-group-title {
+            color: var(--primary-color);
+            font-weight: 800;
+            margin-bottom: 8px;
+        }
+
+        .ai-list {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .ai-item {
+            background: #f8fafc;
+            border-radius: 10px;
+            border: 1px solid #e6edf8;
+            padding: 10px;
+        }
+
+        .ai-item-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .ai-item-name {
+            font-weight: 700;
+            color: #1f2937;
+        }
+
+        .ai-item-link {
+            color: var(--primary-color);
+            font-size: 0.82rem;
+            text-decoration: none;
+            border: 1px solid #c7d2fe;
+            border-radius: 999px;
+            padding: 3px 10px;
+            background: #eef2ff;
+        }
+
+        .ai-item-desc {
+            margin-top: 6px;
+            color: #4b5563;
+            font-size: 0.82rem;
+            line-height: 1.55;
+        }
+
+        .ollama-panel {
+            margin-top: 14px;
+            border: 1px solid #e5e7eb;
+            border-radius: 12px;
+            background: #ffffff;
+            padding: 12px;
+        }
+
+        .ollama-toolbar {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-top: 8px;
+            align-items: center;
+        }
+
+        .ollama-settings {
+            margin-top: 10px;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+
+        .ollama-settings .form-group {
+            margin-bottom: 0;
+        }
+
+        .ollama-system-prompt {
+            min-height: 90px;
+            resize: vertical;
+        }
+
+        .ollama-file-row {
+            margin-top: 8px;
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .ollama-file-meta {
+            font-size: 0.82rem;
+            color: #4b5563;
+        }
+
+        .ollama-output {
+            margin-top: 10px;
+            min-height: 120px;
+            max-height: 280px;
+            overflow: auto;
+            white-space: pre-wrap;
+            word-break: break-word;
+            border: 1px solid #e5e7eb;
+            border-radius: 10px;
+            background: #f8fafc;
+            padding: 10px;
+            font-size: 0.9rem;
+            line-height: 1.6;
+            color: #111827;
+        }
+
+        .stats-container {
+            margin-bottom: 20px;
+            padding: 20px;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 20px;
+            margin-top: 10px;
+        }
+
+        .stat-card {
+            background: white;
+            border-radius: 10px;
+            padding: 18px;
+            text-align: center;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+        }
+
+        .stat-value {
+            font-size: 2rem;
+            font-weight: 800;
+            margin: 10px 0;
+            background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+        }
+
+        .money-value {
+            background: linear-gradient(135deg, var(--money-color), #2E7D32);
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+        }
+
+        .app-container {
+            display: grid;
+            grid-template-columns: 1fr 1.2fr;
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .calendar-container, .overtime-container {
+            padding: 20px;
+            transition: var(--transition);
+        }
+
+        .calendar-container:hover, .overtime-container:hover, .stats-container:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.12);
+        }
+
+        .calendar-header {
+            display: flex;
+            justify-content: center;
+            margin-bottom: 20px;
+        }
+
+        .month-selector-container {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .nav-btn {
+            background-color: var(--primary-light);
+            border: none;
+            width: 40px;
+            height: 40px;
+            border-radius: 10px;
+            cursor: pointer;
+            color: var(--primary-color);
+            transition: var(--transition);
+        }
+
+        .calendar-weekdays {
+            display: grid;
+            grid-template-columns: repeat(7, 1fr);
+            text-align: center;
+            font-weight: 600;
+            margin-bottom: 12px;
+        }
+
+        .calendar-days {
+            display: grid;
+            grid-template-columns: repeat(7, 1fr);
+            gap: 8px;
+        }
+
+        .day {
+            aspect-ratio: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            border-radius: 10px;
+            cursor: pointer;
+            background-color: #f8fafc;
+            border: 2px solid transparent;
+            position: relative;
+        }
+
+        .day-number {
+            font-size: 1.1rem;
+            font-weight: 600;
+        }
+
+        .other-month {
+            color: #adb5bd;
+            opacity: 0.5;
+        }
+
+        .today {
+            background-color: var(--primary-light);
+            border-color: var(--primary-color);
+        }
+
+        .selected {
+            background-color: var(--primary-color);
+            color: white;
+        }
+
+        .selected .day-number {
+            color: white;
+        }
+
+        .overtime-indicator {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background-color: var(--accent-color);
+            position: absolute;
+            bottom: 5px;
+        }
+
+        .day-amount {
+            font-size: 0.65rem;
+            color: var(--money-color);
+            font-weight: bold;
+            margin-top: 2px;
+        }
+
+        .calendar-empty {
+            grid-column: 1 / -1;
+            min-height: 180px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #f8fafc;
+            border-radius: 10px;
+            color: var(--gray-color);
+            border: 2px dashed #dbe4f1;
+        }
+
+        .overtime-form {
+            background: #f8fafc;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+        }
+
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            margin-bottom: 15px;
+        }
+
+        .input-field, .select-field {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e2e8f0;
+            border-radius: 8px;
+            outline: none;
+        }
+
+        .input-field:focus, .select-field:focus {
+            border-color: var(--primary-color);
+        }
+
+        .result-card {
+            background: white;
+            border-radius: 10px;
+            padding: 15px;
+            margin-top: 15px;
+        }
+
+        .result-row {
+            display: flex;
+            justify-content: space-between;
+            gap: 20px;
+        }
+
+        .result-item {
+            flex: 1;
+            text-align: center;
+        }
+
+        .result-value {
+            font-size: 1.6rem;
+            font-weight: 600;
+        }
+
+        .time-value {
+            color: var(--primary-color);
+        }
+
+        .salary-value {
+            color: var(--money-color);
+        }
+
+        .btn {
+            padding: 12px 20px;
+            border-radius: 8px;
+            font-weight: 600;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            border: none;
+            transition: var(--transition);
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
+            color: white;
+        }
+
+        .btn-delete {
+            background-color: #ffeded;
+            color: #d32f2f;
+            border: 2px solid #ffcdd2;
+        }
+
+        .btn-danger {
+            background-color: #ef5350;
+            color: white;
+            border: none;
+        }
+
+        .btn-danger:hover:not(:disabled) {
+            background-color: #e53935;
+        }
+
+        .btn-danger:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+            opacity: 0.6;
+        }
+
+        .btn-group {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+            margin-top: 12px;
+        }
+
+        .btn:disabled, .person-btn:disabled, .compare-btn:disabled, .secondary-btn:disabled, .outline-btn:disabled, .nav-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none !important;
+        }
+
+        .overtime-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            flex-wrap: wrap;
+            margin-bottom: 14px;
+        }
+
+        .selected-date-info {
+            color: var(--gray-color);
+            font-weight: 600;
+        }
+
+        .overtime-list {
+            border-top: 2px solid #eee;
+            padding-top: 20px;
+        }
+
+        .overtime-item {
+            background: white;
+            border-radius: 10px;
+            padding: 15px;
+            margin-bottom: 12px;
+            border-left: 4px solid var(--primary-color);
+        }
+
+        .overtime-item-header {
+            display: flex;
+            justify-content: space-between;
+            gap: 12px;
+            flex-wrap: wrap;
+            margin-bottom: 6px;
+        }
+
+        .overtime-type {
+            font-weight: 700;
+            color: var(--secondary-color);
+        }
+
+        .overtime-time-range {
+            color: var(--gray-color);
+            margin-top: 4px;
+        }
+
+        .list-empty {
+            background: #f8fafc;
+            color: var(--gray-color);
+            border: 2px dashed #dbe4f1;
+            border-radius: 12px;
+            padding: 24px;
+            text-align: center;
+        }
+
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.6);
+            backdrop-filter: blur(4px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            visibility: hidden;
+            opacity: 0;
+            transition: all 0.2s ease;
+        }
+
+        .modal-overlay.active {
+            visibility: visible;
+            opacity: 1;
+        }
+
+        .modal-container {
+            background: white;
+            width: 90%;
+            max-width: 1100px;
+            border-radius: 28px;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+            overflow: hidden;
+            max-height: 85vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .modal-container.small {
+            max-width: 520px;
+        }
+
+        .modal-header {
+            padding: 18px 24px;
+            background: var(--primary-light);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 2px solid #cbd5e1;
+            gap: 12px;
+        }
+
+        .modal-header h3 {
+            font-size: 1.3rem;
+            color: var(--secondary-color);
+        }
+
+        .close-modal {
+            background: none;
+            border: none;
+            font-size: 1.8rem;
+            cursor: pointer;
+            color: var(--gray-color);
+        }
+
+        .modal-body {
+            padding: 20px 24px;
+            overflow-y: auto;
+            flex: 1;
+        }
+
+        .star-cards {
+            display: flex;
+            gap: 20px;
+            margin-bottom: 30px;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+
+        .star-card {
+            background: linear-gradient(145deg, #fff8f0, #fff0e0);
+            border-radius: 28px;
+            padding: 20px 18px;
+            flex: 1;
+            min-width: 200px;
+            text-align: center;
+            box-shadow: 0 8px 20px rgba(0, 0, 0, 0.08);
+            border: 1px solid #ffe0b5;
+        }
+
+        .star-icon {
+            font-size: 2.5rem;
+            margin-bottom: 12px;
+        }
+
+        .star-title {
+            font-size: 1.2rem;
+            font-weight: 700;
+            color: #b45309;
+            margin-bottom: 12px;
+        }
+
+        .star-person {
+            font-size: 1.8rem;
+            font-weight: 800;
+            background: linear-gradient(135deg, #f97316, #facc15);
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+            margin: 8px 0;
+        }
+
+        .star-detail {
+            font-size: 0.9rem;
+            color: #5b3e1a;
+            font-weight: 500;
+        }
+
+        .star-period {
+            font-size: 0.75rem;
+            color: #8b5a2b;
+            margin-top: 8px;
+        }
+
+        hr {
+            margin: 20px 0;
+            border: none;
+            height: 2px;
+            background: linear-gradient(to right, transparent, var(--primary-color), transparent);
+        }
+
+        .compare-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.9rem;
+        }
+
+        .compare-table th, .compare-table td {
+            border: 1px solid #e2e8f0;
+            padding: 12px 10px;
+            text-align: center;
+        }
+
+        .compare-table th {
+            background-color: #f8fafc;
+            color: var(--secondary-color);
+            font-weight: 700;
+        }
+
+        .person-name-badge {
+            font-weight: 800;
+            background: var(--primary-light);
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 40px;
+        }
+
+        .compare-highlight {
+            color: var(--money-color);
+            font-weight: 700;
+        }
+
+        .admin-form {
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+        }
+
+        .helper-text {
+            color: var(--gray-color);
+            font-size: 0.86rem;
+        }
+
+        .danger-text {
+            color: #d32f2f;
+            font-size: 0.86rem;
+        }
+
+        .user-manager-list {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            margin-top: 16px;
+        }
+
+        .user-manager-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            padding: 12px 14px;
+            border-radius: 12px;
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+        }
+
+        .user-manager-actions {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+        }
+
+        .btn-rename {
+            background: #eef4ff;
+            color: var(--primary-color);
+            border: 2px solid #c7d2fe;
+        }
+
+        .user-manager-name {
+            font-weight: 700;
+        }
+
+        .sync-note {
+            margin-top: 8px;
+            color: #64748b;
+            font-size: 0.82rem;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 10px;
+            border-radius: 999px;
+            background: rgba(148, 163, 184, 0.12);
+        }
+
+        .hide {
+            display: none !important;
+        }
+
+        .side-banner {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 14px;
+            width: auto;
+            min-width: 62px;
+            min-height: calc(100vh - 30px);
+            color: white;
+            text-align: center;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.5rem;
+            font-weight: 800;
+            box-shadow: var(--box-shadow);
+            cursor: pointer;
+            position: fixed;
+            top: 15px;
+            z-index: 20;
+            writing-mode: vertical-rl;
+            text-orientation: upright;
+            letter-spacing: 2px;
+        }
+
+        .side-banner.left {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            left: 12px;
+        }
+
+        .side-banner.right {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            right: 12px;
+        }
+
+        .side-banner:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.15);
+        }
+
+        .announcements-section {
+            background: white;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: var(--box-shadow);
+        }
+
+        .announcements-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+
+        .announcements-header h3 {
+            color: var(--secondary-color);
+            font-size: 1.1rem;
+        }
+
+        .announcement-list {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .announcement-item {
+            background: #f8fafc;
+            border-left: 4px solid var(--primary-color);
+            padding: 12px 15px;
+            border-radius: 8px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .announcement-content {
+            flex: 1;
+            color: var(--dark-color);
+            font-weight: 500;
+        }
+
+        .announcement-image-block {
+            margin-top: 10px;
+        }
+
+        .announcement-image-gallery {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            gap: 10px;
+            margin-top: 10px;
+        }
+
+        .announcement-image-thumb {
+            position: relative;
+            border: 1px solid #e2e8f0;
+            border-radius: 12px;
+            overflow: hidden;
+            background: #fff;
+            padding: 0;
+            cursor: zoom-in;
+            box-shadow: 0 4px 12px rgba(15, 23, 42, 0.06);
+        }
+
+        .announcement-image-thumb img {
+            display: block;
+            width: 100%;
+            height: 120px;
+            object-fit: cover;
+        }
+
+        .announcement-image-thumb .image-count-badge {
+            position: absolute;
+            right: 8px;
+            bottom: 8px;
+            border-radius: 999px;
+            background: rgba(15, 23, 42, 0.72);
+            color: #fff;
+            font-size: 0.72rem;
+            padding: 2px 8px;
+        }
+
+        .announcement-image-dropzone {
+            border: 1.5px dashed #cbd5e1;
+            border-radius: 14px;
+            padding: 12px;
+            background: #f8fafc;
+            transition: border-color 0.2s ease, background 0.2s ease, transform 0.2s ease;
+        }
+
+        .announcement-image-dropzone.is-dragover {
+            border-color: var(--primary-color);
+            background: #eef2ff;
+            transform: translateY(-1px);
+        }
+
+        .announcement-image-dropzone input[type="file"] {
+            width: 100%;
+        }
+
+        .announcement-image-preview-wrap {
+            display: none;
+            margin-top: 10px;
+        }
+
+        .announcement-image-preview-wrap.is-visible {
+            display: block;
+        }
+
+        .announcement-image-preview-placeholder {
+            border: 1px dashed #cbd5e1;
+            border-radius: 12px;
+            padding: 14px;
+            color: #64748b;
+            font-size: 0.84rem;
+            background: #fff;
+        }
+
+        .announcement-actions {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .vote-summary {
+            margin-top: 8px;
+            font-size: 0.86rem;
+            color: var(--gray-color);
+        }
+
+        .vote-actions {
+            margin-top: 8px;
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .vote-info-toggle-btn {
+            border: 1px solid #cbd5e1;
+            background: #f8fafc;
+            color: #334155;
+            border-radius: 999px;
+            padding: 6px 12px;
+            font-size: 0.82rem;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .vote-info-toggle-btn:hover {
+            background: #eef2ff;
+            border-color: #a5b4fc;
+            color: #3730a3;
+        }
+
+        .vote-details {
+            background: #f8fafc;
+            border: 1px dashed #cbd5e1;
+            border-radius: 10px;
+            padding: 10px 12px;
+            margin-top: 10px;
+            font-size: 0.82rem;
+            line-height: 1.6;
+        }
+
+        .vote-details-title {
+            margin-bottom: 6px;
+            color: #0f172a;
+        }
+
+        .vote-detail-agree {
+            color: #166534;
+        }
+
+        .vote-detail-disagree {
+            color: #991b1b;
+        }
+
+        .vote-loading,
+        .vote-detail-empty {
+            color: #64748b;
+        }
+
+        .vote-detail-error {
+            color: #b91c1c;
+        }
+
+        .read-receipt-area {
+            margin-top: 10px;
+            padding-top: 10px;
+            border-top: 1px solid #e2e8f0;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .read-receipt-users {
+            color: #475569;
+            font-size: 0.8rem;
+            display: none;
+        }
+
+        .read-receipt-users.is-visible {
+            display: block;
+        }
+
+        .read-receipt-btn {
+            border: none;
+            border-radius: 999px;
+            padding: 6px 14px;
+            font-size: 0.8rem;
+            font-weight: 700;
+            letter-spacing: 0.2px;
+            color: #1d4ed8;
+            background: linear-gradient(135deg, #dbeafe, #eff6ff);
+            box-shadow: 0 3px 8px rgba(29, 78, 216, 0.18);
+            cursor: pointer;
+            transition: transform 0.2s ease, box-shadow 0.2s ease, filter 0.2s ease;
+        }
+
+        .read-receipt-btn:hover:not(:disabled) {
+            transform: translateY(-1px);
+            filter: brightness(1.02);
+            box-shadow: 0 6px 12px rgba(29, 78, 216, 0.22);
+        }
+
+        .read-receipt-btn:disabled,
+        .read-receipt-btn.is-read {
+            cursor: not-allowed;
+            color: #0f766e;
+            background: linear-gradient(135deg, #ccfbf1, #f0fdfa);
+            box-shadow: none;
+            transform: none;
+        }
+
+        .announcement-image-zoom-modal .modal-container {
+            max-width: 980px;
+        }
+
+        .announcement-image-zoom {
+            width: 100%;
+            max-height: 78vh;
+            object-fit: contain;
+            display: block;
+            background: #0f172a;
+            border-radius: 16px;
+        }
+
+        .vote-btn {
+            border: none;
+            border-radius: 999px;
+            padding: 6px 12px;
+            font-size: 0.82rem;
+            font-weight: 700;
+            cursor: pointer;
+        }
+
+        .vote-btn.agree {
+            background: #e8f5e9;
+            color: #2e7d32;
+        }
+
+        .vote-btn.disagree {
+            background: #ffebee;
+            color: #c62828;
+        }
+
+        .btn-sm {
+            padding: 6px 12px;
+            font-size: 0.8rem;
+            border-radius: 6px;
+        }
+
+        .announcements-empty {
+            text-align: center;
+            color: var(--gray-color);
+            padding: 20px;
+            font-style: italic;
+        }
+
+        .countdown-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 12px;
+            padding: 20px;
+            color: white;
+            text-align: center;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
+        }
+
+        .countdown-label {
+            font-size: 0.95rem;
+            font-weight: 600;
+            opacity: 0.9;
+            margin-bottom: 8px;
+        }
+
+        .countdown-timer {
+            font-size: 2.2rem;
+            font-weight: 800;
+            font-family: 'Courier New', monospace;
+            letter-spacing: 2px;
+        }
+
+        .countdown-sublabel {
+            font-size: 0.85rem;
+            margin-top: 8px;
+            opacity: 0.85;
+        }
+
+        footer {
+            text-align: center;
+            margin-top: 40px;
+            color: var(--gray-color);
+        }
+
+        @media (max-width: 1200px) {
+            .daily-panels {
+                grid-template-columns: 1fr;
+            }
+
+            .app-container {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        @media (max-width: 768px) {
+            body {
+                padding: 15px;
+            }
+
+            .side-banner {
+                position: static;
+                transform: none;
+                writing-mode: horizontal-tb;
+                text-orientation: mixed;
+                width: auto;
+                min-height: 56px;
+                border-radius: 12px;
+                font-size: 1rem;
+                letter-spacing: 0;
+                margin-bottom: 10px;
+            }
+
+            .side-banner.left,
+            .side-banner.right {
+                left: auto;
+                right: auto;
+            }
+
+            .side-banner:hover {
+                transform: translateY(-2px);
+            }
+
+            .form-row, .result-row {
+                grid-template-columns: 1fr;
+                flex-direction: column;
+            }
+
+            .header-right, .top-toolbar {
+                justify-content: center;
+            }
+
+            .compare-table th, .compare-table td {
+                padding: 8px 4px;
+                font-size: 0.75rem;
+            }
+
+            .person-btn {
+                padding: 8px 18px;
+                font-size: 0.92rem;
+            }
+
+            .star-person {
+                font-size: 1.4rem;
+            }
+        }
+    </style>
+</head>
+<body>
+<div class="side-banner left" id="bannerLeft" title="点击编辑（仅管理员）">反对内卷</div>
+<div class="side-banner right" id="bannerRight" title="点击编辑（仅管理员）">内卷大四</div>
+
+<div class="container">
+    <div class="announcements-section" id="announcementsSection">
+        <div class="announcements-header">
+            <h3><i class="fas fa-bullhorn"></i> 公告</h3>
+            <button class="btn btn-primary btn-sm" id="addAnnouncementBtn" style="display: none;"><i class="fas fa-plus"></i> 新增公告</button>
+        </div>
+        <div class="announcement-list" id="announcementList">
+            <div class="announcements-empty">加载公告中...</div>
+        </div>
+
+        <div class="quote-panel" style="margin-top: 18px;">
+            <div class="panel-title"><i class="fas fa-quote-left"></i> 每日一言</div>
+            <div class="quote-content" id="dailyQuoteContent">正在加载每日一言...</div>
+            <div class="quote-from" id="dailyQuoteFrom"></div>
+            <div style="margin-top: 10px; text-align: right;">
+                <button class="btn btn-rename btn-sm" id="refreshQuoteBtn"><i class="fas fa-rotate"></i> 换一句</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="top-toolbar">
+        <div class="person-switch-bar" id="personSwitchBar"></div>
+        <div class="header-right">
+            <span class="status-pill" id="adminStatusText">普通访客</span>
+            <button class="compare-btn" id="openCompareModalBtn"><i class="fas fa-trophy"></i> 人员对比 & 加班之星</button>
+            <button class="secondary-btn" id="manageUsersBtn"><i class="fas fa-user-gear"></i> 用户管理</button>
+            <button class="outline-btn" id="adminActionBtn"><i class="fas fa-lock"></i> 管理员登录</button>
+        </div>
+    </div>
+
+    <div class="hint-card">
+        <div class="hint-title-row">
+            <span class="hint-badge"><i class="fas fa-database"></i> 共享数据库模式</span>
+            <span class="hint-main">所有人打开网页后看到的是同一份服务器数据；新增/删除用户仅管理员可操作。</span>
+        </div>
+        <div class="sync-note"><i class="fas fa-rotate"></i> 页面会在切换标签页返回时和每 30 秒自动同步一次</div>
+    </div>
+
+    <div class="stats-container">
+        <div class="stats-header" style="text-align: center; margin-bottom: 8px;">
+            <h2 id="currentPersonTitle">👤 加班统计</h2>
+        </div>
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-icon"><i class="fas fa-calendar-alt"></i></div>
+                <div class="stat-label" id="selectedMonthLabel">本月加班总时长</div>
+                <div class="stat-value" id="monthlyTotalMinutes">0</div>
+                <div class="stat-label">分钟</div>
+            </div>
+            <div class="stat-card money-stat">
+                <div class="stat-icon"><i class="fas fa-money-bill-wave"></i></div>
+                <div class="stat-label" id="selectedMonthAmountLabel">本月加班薪资</div>
+                <div class="stat-value money-value" id="monthlyAmount">0.00</div>
+                <div class="stat-label">元</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon"><i class="fas fa-calendar-day"></i></div>
+                <div class="stat-label" id="selectedMonthDaysLabel">本月加班天数</div>
+                <div class="stat-value" id="overtimeDays">0</div>
+                <div class="stat-label">天</div>
+            </div>
+            <div class="stat-card money-stat">
+                <div class="stat-icon"><i class="fas fa-chart-line"></i></div>
+                <div class="stat-label">年加班薪资</div>
+                <div class="stat-value money-value" id="yearlyAmount">0.00</div>
+                <div class="stat-label">元</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="app-container">
+        <div class="calendar-container">
+            <div class="calendar-header">
+                <div class="month-selector-container">
+                    <button class="nav-btn" id="prevMonth"><i class="fas fa-chevron-left"></i></button>
+                    <input type="month" id="monthSelector">
+                    <button class="nav-btn" id="nextMonth"><i class="fas fa-chevron-right"></i></button>
+                </div>
+            </div>
+            <div class="calendar-weekdays"><div>日</div><div>一</div><div>二</div><div>三</div><div>四</div><div>五</div><div>六</div></div>
+            <div class="calendar-days" id="calendarDays"></div>
+            <div style="margin-top: 15px; font-size: 0.75rem; color: var(--gray-color); text-align: center;">
+                <i class="fas fa-info-circle"></i> 双击格子清空当天加班记录
+            </div>
+        </div>
+
+        <div class="overtime-container">
+            <div class="overtime-header">
+                <h2>加班记录与薪资</h2>
+                <div class="selected-date-info" id="selectedDateInfo">未选择日期</div>
+            </div>
+            <div class="overtime-form">
+                <div class="form-group">
+                    <label for="overtimeType">加班类型</label>
+                    <select class="select-field" id="overtimeType">
+                        <option value="工作日加班">工作日加班</option>
+                        <option value="周末加班">周末加班</option>
+                        <option value="节假日加班">节假日加班</option>
+                        <option value="调休加班">调休加班</option>
+                    </select>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="startTime">开始时间</label>
+                        <input type="time" class="input-field" id="startTime" value="17:30">
+                    </div>
+                    <div class="form-group">
+                        <label for="endTime">结束时间</label>
+                        <input type="time" class="input-field" id="endTime" value="20:30">
+                    </div>
+                </div>
+                <div class="result-card">
+                    <div class="result-row">
+                        <div class="result-item">
+                            <div class="result-label">加班时长</div>
+                            <div class="result-value time-value" id="timeDisplay">0分钟</div>
+                        </div>
+                        <div class="result-item">
+                            <div class="result-label">加班薪资</div>
+                            <div class="result-value salary-value" id="salaryDisplay">0.00元</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="btn-group">
+                    <button class="btn btn-primary" id="addOvertimeBtn"><i class="fas fa-plus-circle"></i> 添加加班记录</button>
+                    <button class="btn btn-delete" id="clearAllBtn"><i class="fas fa-trash-alt"></i> 清空当天记录</button>
+                </div>
+            </div>
+            <div class="countdown-card" id="countdownCard" style="display: none;">
+                <div class="countdown-label" id="countdownLabel">距离下班倒计时</div>
+                <div class="countdown-timer" id="countdownTimer">00:00:00</div>
+                <div class="countdown-sublabel" id="countdownSublabel"></div>
+            </div>
+
+            <div class="overtime-list">
+                <h3>当天加班记录 <span id="dayTotalAmount" style="font-size: 0.8rem;"></span></h3>
+                <div id="overtimeRecords"><div class="list-empty">请选择日期</div></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="ai-directory">
+        <h3><i class="fas fa-compass"></i> AI 工具导航（国内 / 国外）</h3>
+        <div class="helper-text">以下为官方入口，按类别区分：网页聊天、AI 编程工具（IDE 与插件）。免费策略可能随时间调整，请以官网最新说明为准。</div>
+
+        <div class="ollama-panel">
+            <div class="panel-title"><i class="fas fa-robot"></i> 本地 Ollama 聊天</div>
+            <div class="helper-text" id="ollamaStatusText">状态检测中...</div>
+            <div class="ollama-settings">
+                <div class="form-group">
+                    <label for="ollamaModelSelect">模型</label>
+                    <select id="ollamaModelSelect" class="select-field">
+                        <option value="">正在加载模型...</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="refreshOllamaModelsBtn">模型列表</label>
+                    <button class="btn btn-rename btn-sm" id="refreshOllamaModelsBtn" type="button" style="width: 100%;"><i class="fas fa-rotate"></i> 刷新模型</button>
+                </div>
+            </div>
+            <div class="form-group" style="margin-top: 10px;">
+                <label for="ollamaSystemPrompt">系统提示词</label>
+                <textarea id="ollamaSystemPrompt" class="input-field ollama-system-prompt" placeholder="例如：你是一个严谨的中文助手，回答时先给结论，再给步骤。"></textarea>
+                <div class="helper-text">这里会作为 system 角色传给模型，适合给不同模型设置不同人格和风格。</div>
+            </div>
+            <div class="ollama-toolbar">
+                <input type="text" class="input-field" id="ollamaPrompt" placeholder="例如：帮我总结今天的加班数据并给优化建议" style="flex: 1; min-width: 220px;">
+                <button class="btn btn-primary btn-sm" id="sendOllamaBtn"><i class="fas fa-paper-plane"></i> 发送</button>
+                <button class="btn btn-danger btn-sm" id="stopOllamaBtn" disabled style="display: none;"><i class="fas fa-stop"></i> 停止</button>
+                <button class="btn btn-rename btn-sm" id="checkOllamaBtn"><i class="fas fa-heart-pulse"></i> 检测连接</button>
+            </div>
+            <div class="ollama-output" id="ollamaOutput">等待提问...</div>
+        </div>
+
+        <div class="ai-directory-grid" id="aiDirectoryGrid"></div>
+    </div>
+
+    <div class="daily-media-toggle">
+        <div class="helper-text"><i class="fas fa-photo-film"></i> 每日图片与视频默认隐藏，可按需展开</div>
+        <button class="media-toggle-btn" id="toggleDailyMediaBtn" type="button">显示每日内容</button>
+    </div>
+
+    <div class="daily-media-section is-hidden" id="dailyMediaSection">
+        <div class="daily-panels">
+            <div class="wallpaper-panel">
+                <div class="panel-title"><i class="fas fa-image"></i> 每日壁纸</div>
+                <div class="wallpaper-toolbar">
+                    <select id="wallpaperSource" class="select-field" style="max-width: 240px;">
+                        <option value="">自动选择（按顺序）</option>
+                    </select>
+                    <button class="btn btn-primary btn-sm" id="refreshWallpaperBtn"><i class="fas fa-arrows-rotate"></i> 换一张</button>
+                    <button class="btn btn-rename btn-sm" id="viewWallpaperBtn"><i class="fas fa-eye"></i> 查看原图</button>
+                    <button class="btn btn-rename btn-sm" id="downloadWallpaperBtn"><i class="fas fa-download"></i> 下载壁纸</button>
+                </div>
+                <div class="wallpaper-preview">
+                    <img id="dailyWallpaperImage" alt="每日壁纸预览" src="" loading="lazy">
+                </div>
+                <div class="wallpaper-meta" id="wallpaperMeta">正在加载壁纸...</div>
+            </div>
+
+            <div class="quote-panel">
+                <div class="panel-title"><i class="fas fa-video"></i> 每日视频</div>
+                <div class="wallpaper-toolbar">
+                    <select id="videoSource" class="select-field" style="max-width: 240px;">
+                        <option value="">自动选择（按顺序）</option>
+                    </select>
+                    <button class="btn btn-primary btn-sm" id="refreshVideoBtn"><i class="fas fa-arrows-rotate"></i> 换一个</button>
+                </div>
+                <video id="dailyVideoPlayer" width="100%" height="auto" style="background: #000; border-radius: 8px;" controls>
+                    <source src="" type="video/mp4">
+                    您的浏览器不支持视频播放
+                </video>
+                <div class="wallpaper-meta" id="videoMeta" style="margin-top: 10px;">正在加载视频...</div>
+            </div>
+        </div>
+    </div>
+
+    <footer>加班时长计算系统 · 共享数据库版 | 薪资规则：0.25元/分钟 (15元/小时)</footer>
+</div>
+
+<div id="compareModal" class="modal-overlay">
+    <div class="modal-container">
+        <div class="modal-header">
+            <h3 id="compareModalTitle"><i class="fas fa-users"></i> 人员数据对比 & 加班之星</h3>
+            <button class="close-modal" data-close-modal="compareModal">&times;</button>
+        </div>
+        <div class="modal-body" id="compareModalBody">
+            <div style="text-align: center; padding: 30px;">加载对比数据中...</div>
+        </div>
+    </div>
+</div>
+
+<div id="adminLoginModal" class="modal-overlay">
+    <div class="modal-container small">
+        <div class="modal-header">
+            <h3><i class="fas fa-user-shield"></i> 管理员登录</h3>
+            <button class="close-modal" data-close-modal="adminLoginModal">&times;</button>
+        </div>
+        <div class="modal-body">
+            <form class="admin-form" id="adminLoginForm">
+                <div class="form-group">
+                    <label for="adminPassword">管理员密码</label>
+                    <input type="password" id="adminPassword" class="input-field" placeholder="请输入管理员密码" autocomplete="current-password">
+                </div>
+                <div class="helper-text">登录后可新增/删除用户。普通用户无需登录即可查看和填写共享数据。</div>
+                <button type="submit" class="btn btn-primary"><i class="fas fa-right-to-bracket"></i> 登录</button>
+            </form>
+        </div>
+    </div>
+</div>
+
+<div id="userManagerModal" class="modal-overlay">
+    <div class="modal-container small">
+        <div class="modal-header">
+            <h3><i class="fas fa-user-gear"></i> 用户管理</h3>
+            <button class="close-modal" data-close-modal="userManagerModal">&times;</button>
+        </div>
+        <div class="modal-body">
+            <form class="admin-form" id="addUserForm">
+                <div class="form-group">
+                    <label for="newUserName">新增用户名称</label>
+                    <input type="text" id="newUserName" class="input-field" maxlength="20" placeholder="例如：张三">
+                </div>
+                <button type="submit" class="btn btn-primary"><i class="fas fa-user-plus"></i> 新增用户</button>
+            </form>
+            <div class="helper-text" style="margin-top: 16px;">可直接重命名用户；删除用户会同时删除该用户的所有加班记录。</div>
+            <div class="danger-text">允许删除全部用户；如果删空了，请直接在上方重新新增新用户。</div>
+            <div class="user-manager-list" id="userManagerList"></div>
+        </div>
+    </div>
+</div>
+
+<div id="editBannerModal" class="modal-overlay">
+    <div class="modal-container small">
+        <div class="modal-header">
+            <h3><i class="fas fa-banner"></i> 编辑条幅</h3>
+            <button class="close-modal" data-close-modal="editBannerModal">&times;</button>
+        </div>
+        <div class="modal-body">
+            <form class="admin-form" id="editBannerForm">
+                <div class="form-group">
+                    <label for="bannerType">条幅位置</label>
+                    <input type="text" id="bannerType" class="input-field" readonly>
+                </div>
+                <div class="form-group">
+                    <label for="bannerContent">条幅文案（最多50字）</label>
+                    <input type="text" id="bannerContent" class="input-field" maxlength="50" placeholder="输入条幅文案">
+                </div>
+                <button type="submit" class="btn btn-primary"><i class="fas fa-save"></i> 保存</button>
+            </form>
+        </div>
+    </div>
+</div>
+
+<div id="announcementModal" class="modal-overlay">
+    <div class="modal-container small">
+        <div class="modal-header">
+            <h3><i class="fas fa-file-lines"></i> <span id="announcementModalTitle">新增</span> 公告</h3>
+            <button class="close-modal" data-close-modal="announcementModal">&times;</button>
+        </div>
+        <div class="modal-body">
+            <form class="admin-form" id="announcementForm">
+                <div class="form-group">
+                    <label for="announcementCategory">公告类型</label>
+                    <select id="announcementCategory" class="select-field">
+                        <option value="普通公告">普通公告</option>
+                        <option value="投票系统">投票系统</option>
+                    </select>
+                </div>
+                <div class="form-group" id="announcementTypeGroup">
+                    <label for="announcementType" id="announcementTypeLabel">公告名（最多30字）</label>
+                    <input type="text" id="announcementType" class="input-field" maxlength="30" placeholder="例如：项目通知 / 版本更新 / 值班安排">
+                    <div class="helper-text" id="announcementTypeHint">普通公告可自定义公告名。</div>
+                </div>
+                <div class="form-group">
+                    <label for="announcementContent" id="announcementContentLabel">公告内容（最多200字）</label>
+                    <textarea id="announcementContent" class="input-field" maxlength="200" placeholder="输入公告内容或投票主题" style="resize: vertical; min-height: 100px;"></textarea>
+                </div>
+                <div class="form-group">
+                    <label for="announcementImage">公告图片（可选）</label>
+                    <div class="announcement-image-dropzone" id="announcementImageDropzone">
+                        <input type="file" id="announcementImage" class="input-field" accept="image/*" multiple>
+                        <div class="helper-text">点击选择或直接拖拽图片到这里，可一次上传多张。图片会保存到公告中并直接显示。</div>
+                    </div>
+                    <div class="announcement-image-preview-wrap" id="announcementImagePreviewWrap">
+                        <div class="announcement-image-preview-placeholder" id="announcementImagePreviewPlaceholder">暂无已选图片</div>
+                        <div class="announcement-image-gallery" id="announcementImagePreviewList"></div>
+                    </div>
+                </div>
+                <button type="submit" class="btn btn-primary"><i class="fas fa-save"></i> 保存</button>
+            </form>
+        </div>
+    </div>
+</div>
+
+<div id="announcementImageZoomModal" class="modal-overlay announcement-image-zoom-modal">
+    <div class="modal-container">
+        <div class="modal-header">
+            <h3><i class="fas fa-image"></i> 公告图片预览</h3>
+            <button class="close-modal" data-close-modal="announcementImageZoomModal">&times;</button>
+        </div>
+        <div class="modal-body">
+            <img id="announcementImageZoom" class="announcement-image-zoom" src="" alt="公告图片放大预览">
+        </div>
+    </div>
+</div>
+
+<script src="./ai-directory-data.js"></script>
+<script src="./app.js"></script>
+</body>
+</html>
