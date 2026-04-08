@@ -972,6 +972,20 @@ function calculateTimeDifference(startTime, endTime) {
     return end - start;
 }
 
+function calculateOvertimeAmount(startTime, endTime) {
+    const [sh, sm] = startTime.split(':').map(Number);
+    const [eh, em] = endTime.split(':').map(Number);
+    let start = sh * 60 + sm;
+    let end = eh * 60 + em;
+    if (end < start) end += 24 * 60;
+
+    const billingStart = 17 * 60 + 30;
+    const effectiveStart = Math.max(start, billingStart);
+    const billableMinutes = Math.max(0, end - effectiveStart);
+    const blocks = Math.floor(billableMinutes / 20);
+    return Number((blocks * 5).toFixed(2));
+}
+
 function base64UrlEncode(input) {
     return Buffer.from(input)
         .toString('base64')
@@ -1230,7 +1244,7 @@ app.post('/api/overtime', (req, res) => {
         return res.status(400).json({ error: '加班时长必须大于0' });
     }
 
-    const amount = Number((minutes * 0.25).toFixed(2));
+    const amount = calculateOvertimeAmount(startTime, endTime);
     
     // 一天只保留一条记录：先删除该用户当天的旧记录
     db.prepare('DELETE FROM overtime_records WHERE user_id = ? AND work_date = ?').run(userId, date);

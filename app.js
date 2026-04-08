@@ -414,8 +414,26 @@ function calculateTimeDifference(startTime, endTime) {
     return end - start;
 }
 
-function calculateOvertimeAmount(minutes) {
-    return (Number(minutes || 0) * 0.25).toFixed(2);
+function calculateOvertimeAmountByRange(startTime, endTime) {
+    const [sh, sm] = startTime.split(':').map(Number);
+    const [eh, em] = endTime.split(':').map(Number);
+    let start = sh * 60 + sm;
+    let end = eh * 60 + em;
+    if (end < start) end += 24 * 60;
+
+    const billingStart = 17 * 60 + 30;
+    const effectiveStart = Math.max(start, billingStart);
+    const billableMinutes = Math.max(0, end - effectiveStart);
+    const blocks = Math.floor(billableMinutes / 20);
+    return (blocks * 5).toFixed(2);
+}
+
+function calculateOvertimeAmount(minutes, startTime, endTime) {
+    if (startTime && endTime) {
+        return calculateOvertimeAmountByRange(startTime, endTime);
+    }
+    const blocks = Math.floor((Number(minutes) || 0) / 20);
+    return (blocks * 5).toFixed(2);
 }
 
 function getWeekRange(refDate = new Date()) {
@@ -458,6 +476,19 @@ function getUserTotalMinutesBetween(userId, startDate, endDate) {
     return total;
 }
 
+function getUserTotalAmountBetween(userId, startDate, endDate) {
+    const userData = overtimeDataByUser[String(userId)] || {};
+    let total = 0;
+    Object.entries(userData).forEach(([dateKey, records]) => {
+        const recordDate = new Date(`${dateKey}T00:00:00`);
+        if (Number.isNaN(recordDate.getTime())) return;
+        if (recordDate >= startDate && recordDate <= endDate) {
+            total += records.reduce((sum, record) => sum + (Number(record.amount) || 0), 0);
+        }
+    });
+    return total;
+}
+
 function getStarOfPeriod(rangeGetter, ...args) {
     if (!users.length) {
         return { person: '暂无', minutes: 0, amount: '0.00' };
@@ -478,7 +509,7 @@ function getStarOfPeriod(rangeGetter, ...args) {
     return {
         person: bestUser?.name || '暂无',
         minutes: bestMinutes,
-        amount: calculateOvertimeAmount(bestMinutes),
+        amount: formatAmount(getUserTotalAmountBetween(bestUser.id, start, end)),
         start,
         end
     };
@@ -535,7 +566,7 @@ function updateResultDisplay() {
     }
 
     dom.timeDisplay.innerText = formatMinutes(minutes);
-    dom.salaryDisplay.innerText = `${calculateOvertimeAmount(minutes)}元`;
+    dom.salaryDisplay.innerText = `${calculateOvertimeAmount(minutes, start, end)}元`;
 }
 
 function applyWallpaperToBackground(url) {
@@ -1160,7 +1191,7 @@ function renderCompareModal() {
     html += `
             </tbody>
         </table>
-        <div style="margin-top:16px; font-size:0.76rem; color:gray;"><i class="fas fa-info-circle"></i> 薪资规则：0.25元/分钟 (15元/小时)。本周之星基于当前实时日期，本月/年度之星基于当前日历所选月份与年份。</div>`;
+        <div style="margin-top:16px; font-size:0.76rem; color:gray;"><i class="fas fa-info-circle"></i> 薪资规则：17:30 起算，每满 20 分钟 +5 元，不满 20 分钟不计费。本周之星基于当前实时日期，本月/年度之星基于当前日历所选月份与年份。</div>`;
 
     dom.compareModalBody.innerHTML = html;
 }
@@ -1499,7 +1530,7 @@ async function addOvertimeRecord() {
     const dateKey = getDateKey(selectedDate);
     const newRecords = getCurrentUserData()[dateKey] || [];
     const isReplaced = newRecords.length > 0 ? '（已更新当天记录）' : '';
-    alert(`保存成功！${formatMinutes(minutes)} 薪资 ${calculateOvertimeAmount(minutes)}元${isReplaced}\n提示：一天只能保留一条加班记录。`);
+    alert(`保存成功！${formatMinutes(minutes)} 薪资 ${calculateOvertimeAmount(minutes, startTime, endTime)}元${isReplaced}\n提示：一天只能保留一条加班记录。`);
 }
 
 async function clearDayRecords(date) {
