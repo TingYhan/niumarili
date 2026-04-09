@@ -120,7 +120,6 @@ EOF
 
 ### 4. 构建应用镜像
 
-你给出的构建命令可以直接使用：
 
 ```bash
 docker build -t overtime-calculator:1.0 .
@@ -299,7 +298,6 @@ docker buildx build -t overtime-calculator:1.0 --load .
 - `app.js`：前端交互、渲染与事件处理
 - `index.html`：页面结构与样式
 - `ai-directory-data.js`：AI 工具导航数据
-- `.env`：运行参数与密钥配置（不要提交）
 
 ## 项目结构
 
@@ -307,4 +305,3 @@ docker buildx build -t overtime-calculator:1.0 --load .
 - `app.js`：前端交互、渲染与事件处理
 - `index.html`：页面结构与样式
 - `ai-directory-data.js`：AI 工具导航数据
-- `.env`：运行参数与密钥配置（不要提交）
