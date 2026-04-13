@@ -12,15 +12,6 @@ const VIDEO_SOURCES = [
         headers: { 'Accept': 'application/json' },
         videoFields: ['mp4_video'],
         titleFields: []
-    },
-    {
-        id: 'jk-video-suyanw',
-        name: 'JK小姐姐视频',
-        enabled: true,
-        urlTemplate: 'https://api.suyanw.cn/api/jksp.php',
-        headers: {},
-        videoFields: ['mp4_video', 'video', 'url', 'data'],
-        titleFields: []
     }
 ];
 

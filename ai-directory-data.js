@@ -16,6 +16,7 @@ window.AI_DIRECTORY_GROUPS = [
         title: '国外 · 网页聊天',
         items: [
             { name: 'Qwen Chat（国际）', url: 'https://chat.qwen.ai/', desc: '阿里云国际版千问入口，与国内站 URL 和登录体系不同。通常使用国际账号体系，地区可用性与政策以官网说明为准。' },
+            { name: 'GLM Chat（国际）', url: 'https://chat.z.ai/', desc: '智谱 AI 的国际版聊天界面，支持多语言交互。' },
             { name: 'ChatGPT', url: 'https://chat.openai.com/', desc: 'OpenAI 出品，覆盖通用问答与创作。通常有免费层与付费层。' },
             { name: 'Claude', url: 'https://claude.ai/', desc: 'Anthropic 出品，强调安全与长文理解。通常提供有限免费额度。' },
             { name: 'Gemini', url: 'https://gemini.google.com/', desc: 'Google 出品，集成搜索生态。一般可免费使用基础能力。' },
