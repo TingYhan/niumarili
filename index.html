@@ -360,67 +360,6 @@
             line-height: 1.55;
         }
 
-        .ollama-panel {
-            margin-top: 14px;
-            border: 1px solid #e5e7eb;
-            border-radius: 12px;
-            background: #ffffff;
-            padding: 12px;
-        }
-
-        .ollama-toolbar {
-            display: flex;
-            gap: 8px;
-            flex-wrap: wrap;
-            margin-top: 8px;
-            align-items: center;
-        }
-
-        .ollama-settings {
-            margin-top: 10px;
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 10px;
-        }
-
-        .ollama-settings .form-group {
-            margin-bottom: 0;
-        }
-
-        .ollama-system-prompt {
-            min-height: 90px;
-            resize: vertical;
-        }
-
-        .ollama-file-row {
-            margin-top: 8px;
-            display: flex;
-            gap: 8px;
-            align-items: center;
-            flex-wrap: wrap;
-        }
-
-        .ollama-file-meta {
-            font-size: 0.82rem;
-            color: #4b5563;
-        }
-
-        .ollama-output {
-            margin-top: 10px;
-            min-height: 120px;
-            max-height: 280px;
-            overflow: auto;
-            white-space: pre-wrap;
-            word-break: break-word;
-            border: 1px solid #e5e7eb;
-            border-radius: 10px;
-            background: #f8fafc;
-            padding: 10px;
-            font-size: 0.9rem;
-            line-height: 1.6;
-            color: #111827;
-        }
-
         .stats-container {
             margin-bottom: 20px;
             padding: 20px;
@@ -1541,35 +1480,6 @@
     <div class="ai-directory">
         <h3><i class="fas fa-compass"></i> AI 工具导航（国内 / 国外）</h3>
         <div class="helper-text">以下为官方入口，按类别区分：网页聊天、AI 编程工具（IDE 与插件）。免费策略可能随时间调整，请以官网最新说明为准。</div>
-
-        <div class="ollama-panel">
-            <div class="panel-title"><i class="fas fa-robot"></i> 本地 Ollama 聊天</div>
-            <div class="helper-text" id="ollamaStatusText">状态检测中...</div>
-            <div class="ollama-settings">
-                <div class="form-group">
-                    <label for="ollamaModelSelect">模型</label>
-                    <select id="ollamaModelSelect" class="select-field">
-                        <option value="">正在加载模型...</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label for="refreshOllamaModelsBtn">模型列表</label>
-                    <button class="btn btn-rename btn-sm" id="refreshOllamaModelsBtn" type="button" style="width: 100%;"><i class="fas fa-rotate"></i> 刷新模型</button>
-                </div>
-            </div>
-            <div class="form-group" style="margin-top: 10px;">
-                <label for="ollamaSystemPrompt">系统提示词</label>
-                <textarea id="ollamaSystemPrompt" class="input-field ollama-system-prompt" placeholder="例如：你是一个严谨的中文助手，回答时先给结论，再给步骤。"></textarea>
-                <div class="helper-text">这里会作为 system 角色传给模型，适合给不同模型设置不同人格和风格。</div>
-            </div>
-            <div class="ollama-toolbar">
-                <input type="text" class="input-field" id="ollamaPrompt" placeholder="例如：帮我总结今天的加班数据并给优化建议" style="flex: 1; min-width: 220px;">
-                <button class="btn btn-primary btn-sm" id="sendOllamaBtn"><i class="fas fa-paper-plane"></i> 发送</button>
-                <button class="btn btn-danger btn-sm" id="stopOllamaBtn" disabled style="display: none;"><i class="fas fa-stop"></i> 停止</button>
-                <button class="btn btn-rename btn-sm" id="checkOllamaBtn"><i class="fas fa-heart-pulse"></i> 检测连接</button>
-            </div>
-            <div class="ollama-output" id="ollamaOutput">等待提问...</div>
-        </div>
 
         <div class="ai-directory-grid" id="aiDirectoryGrid"></div>
     </div>

@@ -48,8 +48,6 @@
 - `DB_PATH`：SQLite 数据库路径，默认 `./data/overtime.db`
 - `ADMIN_PASSWORD`：管理员密码
 - `ADMIN_SECRET`：管理员 Token 签名密钥
-- `OLLAMA_BASE_URL`：Ollama 服务地址（可选）
-- `OLLAMA_MODEL`：默认 Ollama 模型（可选）
 
 部署环境至少修改：
 
@@ -106,16 +104,12 @@ PORT=3000
 DB_PATH=/app/data/overtime.db
 ADMIN_PASSWORD=请替换为强密码
 ADMIN_SECRET=请替换为足够随机的长字符串
-OLLAMA_BASE_URL=http://host.docker.internal:11434
-OLLAMA_MODEL=qwen3.5:2b
 EOF
 ```
 
 说明：
 
 - `DB_PATH` 指向容器内数据目录
-- 如果 Ollama 也在宿主机上运行，建议应用容器启动时加上 `--add-host=host.docker.internal:host-gateway`
-- 然后把 `OLLAMA_BASE_URL` 保持为 `http://host.docker.internal:11434`
 - 部署环境必须替换 `ADMIN_PASSWORD` 和 `ADMIN_SECRET`
 
 ### 4. 构建应用镜像
@@ -147,7 +141,6 @@ docker run -d \
   --name overtime-app \
   --restart unless-stopped \
   --network web \
-  --add-host=host.docker.internal:host-gateway \
   --env-file .env \
   -v /opt/overtime-app/data:/app/data \
   overtime-calculator:1.0
@@ -262,8 +255,6 @@ docker run -d \
 - `DB_PATH`：数据库文件路径，建议在容器中使用 `/app/data/overtime.db`
 - `ADMIN_PASSWORD`：管理员密码
 - `ADMIN_SECRET`：管理员 Token 密钥
-- `OLLAMA_BASE_URL`：Ollama 地址
-- `OLLAMA_MODEL`：默认 Ollama 模型
 
 ## 常见问题
 
@@ -286,11 +277,6 @@ docker buildx build -t overtime-calculator:1.0 --load .
 - 确认域名已经解析到服务器
 - 确认 80/443 已放行
 - 查看 `docker logs overtime-caddy`
-
-### 4) Ollama 不通
-
-- 如果 Ollama 在宿主机上，容器里不应使用 `127.0.0.1`
-- 需要换成宿主机可达地址，或者把 Ollama 也放进 Docker 网络
 
 ## 项目结构
 

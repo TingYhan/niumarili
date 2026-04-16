@@ -14,15 +14,11 @@ let editingAnnouncementId = null;
 let countdownInterval = null;
 let currentWallpaperUrl = '';
 let currentWallpaperTitle = '';
-let isSendingOllama = false;
-let ollamaAbortController = null;
 let lastNormalAnnouncementType = '普通公告';
 let wallpaperSourcesCache = [];
 let videoSourcesCache = [];
 let dailyMediaInitialized = false;
 let currentAnnouncementImageDataList = [];
-const OLLAMA_SELECTED_MODEL_STORAGE_KEY = 'ollama_selected_model';
-const OLLAMA_SYSTEM_PROMPT_STORAGE_KEY = 'ollama_system_prompt';
 const WALLPAPER_SELECTED_SOURCE_STORAGE_KEY = 'wallpaper_selected_source';
 const VIDEO_SELECTED_SOURCE_STORAGE_KEY = 'video_selected_source';
 const DAILY_MEDIA_VISIBLE_STORAGE_KEY = 'daily_media_visible';
@@ -182,15 +178,6 @@ function cacheDom() {
     dom.dailyQuoteContent = document.getElementById('dailyQuoteContent');
     dom.dailyQuoteFrom = document.getElementById('dailyQuoteFrom');
     dom.refreshQuoteBtn = document.getElementById('refreshQuoteBtn');
-    dom.ollamaStatusText = document.getElementById('ollamaStatusText');
-    dom.ollamaPrompt = document.getElementById('ollamaPrompt');
-    dom.sendOllamaBtn = document.getElementById('sendOllamaBtn');
-    dom.stopOllamaBtn = document.getElementById('stopOllamaBtn');
-    dom.checkOllamaBtn = document.getElementById('checkOllamaBtn');
-    dom.ollamaOutput = document.getElementById('ollamaOutput');
-    dom.ollamaModelSelect = document.getElementById('ollamaModelSelect');
-    dom.refreshOllamaModelsBtn = document.getElementById('refreshOllamaModelsBtn');
-    dom.ollamaSystemPrompt = document.getElementById('ollamaSystemPrompt');
     dom.aiDirectoryGrid = document.getElementById('aiDirectoryGrid');
     dom.dailyMediaSection = document.getElementById('dailyMediaSection');
     dom.toggleDailyMediaBtn = document.getElementById('toggleDailyMediaBtn');
@@ -1858,278 +1845,6 @@ async function handleDeleteAnnouncement(announcementId) {
     await loadBootstrap({ preserveSelection: true, silent: true });
 }
 
-function setOllamaOutput(text) {
-    if (!dom.ollamaOutput) return;
-    dom.ollamaOutput.textContent = String(text || '');
-}
-
-function getStoredOllamaModel() {
-    return localStorage.getItem(OLLAMA_SELECTED_MODEL_STORAGE_KEY) || '';
-}
-
-function setStoredOllamaModel(modelName) {
-    if (modelName) {
-        localStorage.setItem(OLLAMA_SELECTED_MODEL_STORAGE_KEY, modelName);
-    } else {
-        localStorage.removeItem(OLLAMA_SELECTED_MODEL_STORAGE_KEY);
-    }
-}
-
-function getStoredOllamaSystemPrompt() {
-    return localStorage.getItem(OLLAMA_SYSTEM_PROMPT_STORAGE_KEY) || '';
-}
-
-function setStoredOllamaSystemPrompt(text) {
-    if (text) {
-        localStorage.setItem(OLLAMA_SYSTEM_PROMPT_STORAGE_KEY, text);
-    } else {
-        localStorage.removeItem(OLLAMA_SYSTEM_PROMPT_STORAGE_KEY);
-    }
-}
-
-function setOllamaModelOptions(models = [], selectedModel = '') {
-    if (!dom.ollamaModelSelect) return;
-
-    const uniqueModels = Array.from(new Set(models.filter(Boolean)));
-    const targetModel = selectedModel || getStoredOllamaModel() || uniqueModels[0] || '';
-    dom.ollamaModelSelect.innerHTML = '';
-
-    if (!uniqueModels.length) {
-        const option = document.createElement('option');
-        option.value = '';
-        option.textContent = '未获取到模型';
-        dom.ollamaModelSelect.appendChild(option);
-        return;
-    }
-
-    uniqueModels.forEach((modelName) => {
-        const option = document.createElement('option');
-        option.value = modelName;
-        option.textContent = modelName;
-        dom.ollamaModelSelect.appendChild(option);
-    });
-
-    if (targetModel && !uniqueModels.includes(targetModel)) {
-        const option = document.createElement('option');
-        option.value = targetModel;
-        option.textContent = `${targetModel}（未在列表中）`;
-        dom.ollamaModelSelect.appendChild(option);
-    }
-
-    dom.ollamaModelSelect.value = targetModel;
-    setStoredOllamaModel(targetModel);
-}
-
-async function loadOllamaModels({ silent = false } = {}) {
-    if (!dom.ollamaModelSelect) return;
-    try {
-        const payload = await apiFetch('/ollama/models', {}, { silent });
-        const installedModels = Array.isArray(payload?.installedModels) ? payload.installedModels : [];
-        const storedModel = getStoredOllamaModel();
-        const defaultModel = payload?.defaultModel || '';
-        setOllamaModelOptions(installedModels, storedModel || defaultModel);
-        if (dom.ollamaStatusText) {
-            dom.ollamaStatusText.textContent = `已加载模型列表，共 ${installedModels.length} 个`;
-        }
-    } catch (error) {
-        if (dom.ollamaStatusText) {
-            dom.ollamaStatusText.textContent = '获取模型列表失败，请检查 Ollama 是否可用';
-        }
-        if (!silent) {
-            console.error(error);
-        }
-    }
-}
-
-function stopOllamaPrompt() {
-    if (ollamaAbortController && isSendingOllama) {
-        ollamaAbortController.abort();
-    }
-}
-
-async function checkOllamaStatus({ silent = false } = {}) {
-    if (!dom.ollamaStatusText) return;
-
-    try {
-        const payload = await apiFetch('/ollama/status', {}, { silent });
-        if (!payload?.ok) {
-            dom.ollamaStatusText.textContent = `连接失败：${payload?.message || 'Ollama 不可用'}`;
-            return;
-        }
-
-        if (payload.hasModel) {
-            dom.ollamaStatusText.textContent = `已连接，当前模型：${payload.model}`;
-        } else {
-            dom.ollamaStatusText.textContent = `已连接 Ollama，但模型未安装：${payload.model}`;
-        }
-    } catch (error) {
-        dom.ollamaStatusText.textContent = '无法连接 Ollama，请检查服务器部署';
-    }
-}
-
-function stopOllamaPrompt() {
-    if (ollamaAbortController && isSendingOllama) {
-        ollamaAbortController.abort();
-    }
-}
-
-async function sendOllamaPrompt() {
-    if (!dom.ollamaPrompt) return;
-    if (isSendingOllama) return;
-
-    const prompt = dom.ollamaPrompt.value.trim();
-    if (!prompt) {
-        alert('请输入提问内容');
-        return;
-    }
-
-    const selectedModel = dom.ollamaModelSelect ? String(dom.ollamaModelSelect.value || '').trim() : '';
-    const systemPrompt = dom.ollamaSystemPrompt ? String(dom.ollamaSystemPrompt.value || '').trim() : '';
-    if (dom.ollamaModelSelect && selectedModel) {
-        setStoredOllamaModel(selectedModel);
-    }
-    setStoredOllamaSystemPrompt(systemPrompt);
-
-    isSendingOllama = true;
-    ollamaAbortController = new AbortController();
-    if (dom.sendOllamaBtn) {
-        dom.sendOllamaBtn.disabled = true;
-        dom.sendOllamaBtn.textContent = '生成中...';
-    }
-    if (dom.stopOllamaBtn) {
-        dom.stopOllamaBtn.disabled = false;
-        dom.stopOllamaBtn.style.display = 'inline-block';
-    }
-    setOllamaOutput('正在调用 Ollama，思考中...');
-
-    try {
-        const headers = new Headers();
-        if (adminToken) {
-            headers.set('Authorization', `Bearer ${adminToken}`);
-        }
-
-        const response = await fetch(`${API_BASE}/ollama/chat`, {
-            method: 'POST',
-            headers: { ...Object.fromEntries(headers), 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                prompt,
-                model: selectedModel,
-                systemPrompt
-            }),
-            signal: ollamaAbortController.signal
-        });
-
-        if (!response.ok) {
-            const text = await response.text();
-            setOllamaOutput(`错误 ${response.status}: ${text}`);
-            return;
-        }
-
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        let outputText = '';
-        let hasStarted = false;
-        let hasError = false;
-        let thinkingText = '';
-
-        while (true) {
-            const { done, value } = await reader.read();
-            if (value) {
-                buffer += decoder.decode(value, { stream: true });
-                const lines = buffer.split('\n');
-                buffer = lines.pop() || '';
-
-                for (const line of lines) {
-                    if (!line.trim()) continue;
-                    try {
-                        const msg = JSON.parse(line);
-                        if (msg.type === 'start') {
-                            hasStarted = true;
-                            setOllamaOutput('思考中...');
-                        } else if (msg.type === 'heartbeat') {
-                            if (!outputText && !thinkingText) {
-                                setOllamaOutput('思考中...');
-                            }
-                        } else if (msg.type === 'thinking' && msg.content) {
-                            thinkingText += msg.content;
-                            setOllamaOutput(`【思考过程】\n${thinkingText}\n\n【回答】\n${outputText}`.trim());
-                        } else if (msg.type === 'chunk' && msg.content) {
-                            if (!hasStarted) {
-                                outputText = msg.content;
-                                hasStarted = true;
-                            } else {
-                                outputText += msg.content;
-                            }
-                            if (thinkingText) {
-                                setOllamaOutput(`【思考过程】\n${thinkingText}\n\n【回答】\n${outputText}`);
-                            } else {
-                                setOllamaOutput(outputText);
-                            }
-                        } else if (msg.type === 'error') {
-                            hasError = true;
-                            outputText = `[错误] ${msg.error}`;
-                            setOllamaOutput(outputText);
-                        } else if (msg.type === 'done') {
-                            if (!hasError && !outputText) {
-                                setOllamaOutput('模型未返回内容');
-                            }
-                        }
-                    } catch (e) {
-                        // invalid json, skip
-                    }
-                }
-            }
-            if (done) break;
-        }
-
-        if (buffer.trim()) {
-            try {
-                const msg = JSON.parse(buffer);
-                if (msg.type === 'thinking' && msg.content) {
-                    thinkingText += msg.content;
-                    setOllamaOutput(`【思考过程】\n${thinkingText}\n\n【回答】\n${outputText}`.trim());
-                } else if (msg.type === 'chunk' && msg.content) {
-                    if (!hasStarted) {
-                        outputText = msg.content;
-                        hasStarted = true;
-                    } else {
-                        outputText += msg.content;
-                    }
-                    if (thinkingText) {
-                        setOllamaOutput(`【思考过程】\n${thinkingText}\n\n【回答】\n${outputText}`);
-                    } else {
-                        setOllamaOutput(outputText);
-                    }
-                } else if (msg.type === 'error') {
-                    hasError = true;
-                    outputText = `[错误] ${msg.error}`;
-                    setOllamaOutput(outputText);
-                }
-            } catch (e) {
-                // invalid final buffer
-            }
-        }
-    } catch (error) {
-        if (error.name === 'AbortError') {
-            setOllamaOutput('已停止输出');
-        } else {
-            setOllamaOutput(`请求失败：${error.message || '未知错误'}`);
-        }
-    } finally {
-        isSendingOllama = false;
-        ollamaAbortController = null;
-        if (dom.sendOllamaBtn) {
-            dom.sendOllamaBtn.disabled = false;
-            dom.sendOllamaBtn.textContent = '发送';
-        }
-        if (dom.stopOllamaBtn) {
-            dom.stopOllamaBtn.disabled = true;
-            dom.stopOllamaBtn.style.display = 'none';
-        }
-    }
-}
-
 function bindEvents() {
     dom.prevMonth.addEventListener('click', () => {
         currentDate.setMonth(currentDate.getMonth() - 1);
@@ -2256,44 +1971,6 @@ function bindEvents() {
             if (thumb?.dataset?.imageSrc) {
                 openAnnouncementImageZoom(thumb.dataset.imageSrc);
             }
-        });
-    }
-
-    if (dom.checkOllamaBtn) {
-        dom.checkOllamaBtn.addEventListener('click', () => checkOllamaStatus({ silent: false }));
-    }
-
-    if (dom.sendOllamaBtn) {
-        dom.sendOllamaBtn.addEventListener('click', sendOllamaPrompt);
-    }
-
-    if (dom.stopOllamaBtn) {
-        dom.stopOllamaBtn.addEventListener('click', stopOllamaPrompt);
-    }
-
-    if (dom.ollamaPrompt) {
-        dom.ollamaPrompt.addEventListener('keydown', (event) => {
-            if (event.key === 'Enter' && !event.shiftKey) {
-                event.preventDefault();
-                sendOllamaPrompt();
-            }
-        });
-    }
-
-    if (dom.refreshOllamaModelsBtn) {
-        dom.refreshOllamaModelsBtn.addEventListener('click', () => loadOllamaModels({ silent: false }));
-    }
-
-    if (dom.ollamaModelSelect) {
-        dom.ollamaModelSelect.addEventListener('change', () => {
-            setStoredOllamaModel(dom.ollamaModelSelect.value);
-        });
-    }
-
-    if (dom.ollamaSystemPrompt) {
-        dom.ollamaSystemPrompt.value = getStoredOllamaSystemPrompt();
-        dom.ollamaSystemPrompt.addEventListener('input', () => {
-            setStoredOllamaSystemPrompt(dom.ollamaSystemPrompt.value);
         });
     }
 
@@ -2435,8 +2112,6 @@ async function init() {
         if (mediaVisible) {
             await ensureDailyMediaLoaded().catch(() => {});
         }
-        await loadOllamaModels({ silent: true });
-        await checkOllamaStatus({ silent: true });
     } catch (error) {
         console.error(error);
         dom.personSwitchBar.innerHTML = '<div class="list-empty" style="width:100%;">无法连接后端服务，请先启动共享数据库服务</div>';
