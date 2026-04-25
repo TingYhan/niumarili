@@ -1,30 +1,261 @@
-cd /root/dlhost/data/overtime-calculator
-docker build -t overtime-calculator:1.0 .
-docker rm -f overtime-app 2>/dev/null || true
-docker run -d \
-  --name overtime-app \
-  --restart unless-stopped \
-  --network web \
-  -p 3000:3000 \
-  -e ADMIN_PASSWORD='rzq0.123' \
-  -e ADMIN_SECRET='e4481122e6739becacf84c7a81a4584ab90e678dca8d3bbbfb758e226cccfb0b' \
-  -e NODE_ID='cn-main' \
-  -e SYNC_PEER_URL='http://163.192.198.190:3000' \
-  -e SYNC_SHARED_SECRET='115add8401e43bfa03fed27cc3ca7af5f8f31aaca5ed51364680e5b70f8b3588' \
-  -v /root/dlhost/data/overtime-calculator-data:/app/data \
-  overtime-calculator:1.0
+当前部署说明
 
-docker run -d \
-  --name overtime-app \
-  --restart unless-stopped \
-  --network web \
-  -p 3000:3000 \
-  -e ADMIN_PASSWORD='rzq0.123' \
-  -e ADMIN_SECRET='e4481122e6739becacf84c7a81a4584ab90e678dca8d3bbbfb758e226cccfb0b' \
-  -e NODE_ID='oracle-backup' \
-  -e SYNC_PEER_URL='http://182.92.64.216:3000' \
-  -e SYNC_SHARED_SECRET='115add8401e43bfa03fed27cc3ca7af5f8f31aaca5ed51364680e5b70f8b3588' \
-  -v /root/dlhost/data/overtime-calculator-data:/app/data \
-  overtime-calculator:1.0
-  
-docker image prune -f
+- 国内主机：`182.92.64.216`
+- 国外备机：`163.192.198.190`
+- 国内访问地址：`http://182.92.64.216:8888`
+- 国外访问地址：`https://rili.khcy.dpdns.org`
+- 服务启动方式：宿主机 `systemd` 管理 `overtime-app`
+- 反向代理：宿主机 `caddy`
+
+目前已经实现：
+
+- 双端数据互同步
+- 两边网页可正常访问
+- 不再需要 Docker 重建镜像
+
+注意
+
+- 现在“双端互同步”同步的是业务数据和数据库变化，不是代码文件
+- 所以你改了 `index.html`、`app.js`、`server.js`、`package.json` 这类代码后，仍然要把代码更新到两台服务器
+- 只是更新方式已经变成 `git pull + 刷新页面` 或 `git pull + 重启服务`，不需要再 `docker build`
+
+一、平时更新代码的总流程
+
+如果你本地已经改好代码并提交到了 GitHub：
+
+国内主机执行：
+
+```bash
+cd /opt/overtime-app/current
+git pull
+```
+
+国外备机执行：
+
+```bash
+cd /opt/overtime-app/current
+git pull
+```
+
+然后按下面“前端更新 / 后端更新 / 依赖更新”的方式分别处理。
+
+二、只改前端代码时怎么生效
+
+前端文件主要包括：
+
+- `index.html`
+- `app.js`
+- `ai-directory-data.js`
+- `assets/` 里的图片、字体等静态文件
+
+操作步骤：
+
+国内主机：
+
+```bash
+cd /opt/overtime-app/current
+git pull
+```
+
+国外备机：
+
+```bash
+cd /opt/overtime-app/current
+git pull
+```
+
+然后浏览器直接刷新页面即可生效。
+
+如果浏览器还显示旧页面：
+
+- 先按一次 `Ctrl+F5`
+- 或者清理浏览器缓存后再打开
+
+说明：
+
+- 现在前端文件是服务器直接读取当前目录下的文件返回给浏览器
+- 所以前端改动不需要重启 `overtime-app`
+- 更不需要 Docker 重建
+
+三、改后端代码时怎么生效
+
+后端代码主要是：
+
+- `server.js`
+
+操作步骤：
+
+国内主机：
+
+```bash
+cd /opt/overtime-app/current
+git pull
+sudo systemctl restart overtime-app
+```
+
+国外备机：
+
+```bash
+cd /opt/overtime-app/current
+git pull
+sudo systemctl restart overtime-app
+```
+
+可选检查：
+
+```bash
+sudo systemctl status overtime-app --no-pager -l
+curl http://127.0.0.1:3000
+```
+
+说明：
+
+- 后端逻辑是在 Node 进程里运行的
+- 所以改完 `server.js` 后必须重启 `overtime-app`
+- 只刷新浏览器不够
+
+四、改依赖时怎么生效
+
+如果改了这些文件：
+
+- `package.json`
+- `package-lock.json`
+
+操作步骤：
+
+国内主机：
+
+```bash
+cd /opt/overtime-app/current
+git pull
+npm install
+sudo systemctl restart overtime-app
+```
+
+国外备机：
+
+```bash
+cd /opt/overtime-app/current
+git pull
+npm install
+sudo systemctl restart overtime-app
+```
+
+五、改 Caddy 配置时怎么生效
+
+如果改的是：
+
+- `/etc/caddy/Caddyfile`
+
+执行：
+
+```bash
+sudo systemctl restart caddy
+sudo systemctl status caddy --no-pager -l
+```
+
+六、改环境变量时怎么生效
+
+如果改的是：
+
+- `/opt/overtime-app/shared.env`
+
+执行：
+
+```bash
+sudo systemctl restart overtime-app
+```
+
+如果同时改了 Caddy 配置，再额外执行：
+
+```bash
+sudo systemctl restart caddy
+```
+
+七、怎么确认双机同步还正常
+
+可以在任意一边页面新增一条记录或公告，然后到另一边查看是否同步过来。
+
+也可以看服务日志：
+
+```bash
+sudo journalctl -u overtime-app -n 50 --no-pager
+```
+
+八、最常用的几种情况
+
+1. 只改网页样式或前端交互
+
+```bash
+cd /opt/overtime-app/current
+git pull
+```
+
+两台都拉完代码后，浏览器直接刷新。
+
+2. 改了接口、数据库逻辑、同步逻辑
+
+```bash
+cd /opt/overtime-app/current
+git pull
+sudo systemctl restart overtime-app
+```
+
+两台都执行一遍。
+
+3. 改了依赖
+
+```bash
+cd /opt/overtime-app/current
+git pull
+npm install
+sudo systemctl restart overtime-app
+```
+
+两台都执行一遍。
+
+九、常用排查命令
+
+查看应用状态：
+
+```bash
+sudo systemctl status overtime-app --no-pager -l
+```
+
+查看应用日志：
+
+```bash
+sudo journalctl -u overtime-app -n 100 --no-pager
+```
+
+查看 Caddy 状态：
+
+```bash
+sudo systemctl status caddy --no-pager -l
+```
+
+查看本机 Node 服务是否正常：
+
+```bash
+curl http://127.0.0.1:3000
+```
+
+查看国内主机入口：
+
+```bash
+curl http://182.92.64.216:8888
+```
+
+查看国外备机入口：
+
+```bash
+curl -I https://rili.khcy.dpdns.org
+```
+
+十、结论
+
+- 改前端：`git pull` 后直接刷新网页
+- 改后端：`git pull` 后重启 `overtime-app`
+- 改依赖：`git pull + npm install + 重启 overtime-app`
+- 改 Caddy：重启 `caddy`
+- 不再需要 Docker 重建
