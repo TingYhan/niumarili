@@ -65,6 +65,23 @@ npm start
 
 访问：`http://localhost:3000`
 
+## 非 Docker 部署
+
+如果你想改完网页文件后直接刷新生效，而不是每次重建镜像，可以直接改成宿主机部署：
+
+- Node.js 直接运行 `server.js`
+- Caddy 直接安装在宿主机
+- 两台服务器继续保留 `NODE_ID`、`SYNC_PEER_URL`、`SYNC_SHARED_SECRET`
+
+仓库里已经补了可直接使用的模板和说明：
+
+- `deploy/native/README.md`
+- `deploy/native/ip-cutover-guide.md`
+- `deploy/native/overtime-app.service`
+- `deploy/native/Caddyfile`
+- `deploy/native/env.main.example`
+- `deploy/native/env.backup.example`
+
 ## Docker 部署流程（推荐）
 
 下面以 Ubuntu 22.04 为例，域名假设为 `overtime.example.com`。示例里使用：

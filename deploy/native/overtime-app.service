@@ -1,0 +1,15 @@
+[Unit]
+Description=Overtime Calculator App
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/overtime-app/current
+EnvironmentFile=/opt/overtime-app/shared.env
+ExecStart=/usr/bin/node /opt/overtime-app/current/server.js
+Restart=always
+RestartSec=3
+User=root
+
+[Install]
+WantedBy=multi-user.target

@@ -4,6 +4,7 @@ const SELECTED_USER_STORAGE_KEY = 'overtime_selected_user_id';
 
 let users = [];
 let overtimeDataByUser = {};
+let userProfilesByUser = {};
 let announcements = [];
 let currentUserId = null;
 let currentDate = new Date();
@@ -19,9 +20,40 @@ let wallpaperSourcesCache = [];
 let videoSourcesCache = [];
 let dailyMediaInitialized = false;
 let currentAnnouncementImageDataList = [];
+let editingUserId = null;
+let realtimeEventSource = null;
+let realtimeReconnectTimer = null;
+let realtimeRefreshTimer = null;
+let lastRealtimeToken = '';
+let currentDataToken = '';
+const overtimeReasonDraftByKey = new Map();
+const overtimeStartTimeDraftByKey = new Map();
+const overtimeEndTimeDraftByKey = new Map();
 const WALLPAPER_SELECTED_SOURCE_STORAGE_KEY = 'wallpaper_selected_source';
 const VIDEO_SELECTED_SOURCE_STORAGE_KEY = 'video_selected_source';
 const DAILY_MEDIA_VISIBLE_STORAGE_KEY = 'daily_media_visible';
+const OVERTIME_PDF_PROFILE_STORAGE_KEY = 'overtime_pdf_profile_by_user';
+const ANNUAL_HOURS_PER_DAY = 8;
+const DEFAULT_ANNUAL_DAYS = 5;
+const DEFAULT_START_TIME = '17:30';
+const DEFAULT_END_TIME = '20:30';
+const PDF_TEXT_FONT_NAME = 'SimSun';
+const PDF_TEXT_FONT_FILE = 'SimSun.ttf';
+const PDF_TEXT_FONT_BOLD_NAME = 'SimSunBold';
+const PDF_TEXT_FONT_BOLD_FILE = 'SimSun-Bold.ttf';
+const PDF_TEXT_FONT_SOURCES = [
+    '/assets/fonts/SimSun.ttf',
+    '/assets/fonts/STSONG.TTF',
+    '/assets/fonts/NotoSansSC-Subset-VF.ttf',
+    'https://github.com/googlefonts/noto-cjk/raw/main/Sans/Variable/TTF/Subset/NotoSansSC-VF.ttf'
+];
+const PDF_TEXT_FONT_BOLD_SOURCES = [
+    '/assets/fonts/SimSun-Bold.ttf',
+    '/assets/fonts/simsunb.ttf',
+    '/assets/fonts/STSONG.TTF'
+];
+let pdfTextFontBase64Promise = null;
+let pdfTextFontBoldBase64Promise = null;
 
 function getStoredSelectedUserId() {
     const rawValue = localStorage.getItem(SELECTED_USER_STORAGE_KEY);
@@ -47,6 +79,65 @@ function setStoredDailyMediaVisible(visible) {
         return;
     }
     localStorage.removeItem(DAILY_MEDIA_VISIBLE_STORAGE_KEY);
+}
+
+function scheduleRealtimeBootstrap(token) {
+    const tokenText = String(token || '').trim();
+    if (tokenText && tokenText === lastRealtimeToken) {
+        return;
+    }
+    if (tokenText) {
+        lastRealtimeToken = tokenText;
+    }
+    if (realtimeRefreshTimer) {
+        clearTimeout(realtimeRefreshTimer);
+    }
+    realtimeRefreshTimer = setTimeout(() => {
+        loadBootstrap({ preserveSelection: true, silent: true }).catch(() => {});
+    }, 200);
+}
+
+function connectRealtimeStream() {
+    if (typeof window.EventSource !== 'function') {
+        return;
+    }
+    if (realtimeEventSource) {
+        realtimeEventSource.close();
+        realtimeEventSource = null;
+    }
+
+    const streamUrl = `${API_BASE}/stream`;
+    realtimeEventSource = new EventSource(streamUrl);
+    realtimeEventSource.addEventListener('connected', (event) => {
+        try {
+            const payload = JSON.parse(String(event?.data || '{}'));
+            if (payload?.token) {
+                lastRealtimeToken = String(payload.token);
+            }
+        } catch {
+            // Ignore malformed bootstrap stream events.
+        }
+    });
+    realtimeEventSource.addEventListener('data-changed', (event) => {
+        try {
+            const payload = JSON.parse(String(event?.data || '{}'));
+            scheduleRealtimeBootstrap(payload?.token || '');
+        } catch {
+            scheduleRealtimeBootstrap('');
+        }
+    });
+    realtimeEventSource.onerror = () => {
+        if (realtimeEventSource) {
+            realtimeEventSource.close();
+            realtimeEventSource = null;
+        }
+        if (realtimeReconnectTimer) {
+            clearTimeout(realtimeReconnectTimer);
+        }
+        realtimeReconnectTimer = setTimeout(() => {
+            connectRealtimeStream();
+        }, 3000);
+    };
 }
 
 const dom = {};
@@ -113,6 +204,7 @@ function cacheDom() {
     dom.monthlyAmount = document.getElementById('monthlyAmount');
     dom.overtimeDays = document.getElementById('overtimeDays');
     dom.yearlyAmount = document.getElementById('yearlyAmount');
+    dom.annualLeaveRemaining = document.getElementById('annualLeaveRemaining');
     dom.prevMonth = document.getElementById('prevMonth');
     dom.nextMonth = document.getElementById('nextMonth');
     dom.monthSelector = document.getElementById('monthSelector');
@@ -125,6 +217,9 @@ function cacheDom() {
     dom.salaryDisplay = document.getElementById('salaryDisplay');
     dom.addOvertimeBtn = document.getElementById('addOvertimeBtn');
     dom.clearAllBtn = document.getElementById('clearAllBtn');
+    dom.overtimeReason = document.getElementById('overtimeReason');
+    dom.exportCurrentPdfBtn = document.getElementById('exportCurrentPdfBtn');
+    dom.exportAllPdfBtn = document.getElementById('exportAllPdfBtn');
     dom.dayTotalAmount = document.getElementById('dayTotalAmount');
     dom.overtimeRecords = document.getElementById('overtimeRecords');
     dom.compareModal = document.getElementById('compareModal');
@@ -135,7 +230,12 @@ function cacheDom() {
     dom.adminPassword = document.getElementById('adminPassword');
     dom.userManagerModal = document.getElementById('userManagerModal');
     dom.addUserForm = document.getElementById('addUserForm');
-    dom.newUserName = document.getElementById('newUserName');
+    dom.userNickname = document.getElementById('userNickname');
+    dom.userDisplayName = document.getElementById('userDisplayName');
+    dom.userEmpId = document.getElementById('userEmpId');
+    dom.userDept = document.getElementById('userDept');
+    dom.saveUserBtn = document.getElementById('saveUserBtn');
+    dom.cancelEditUserBtn = document.getElementById('cancelEditUserBtn');
     dom.userManagerList = document.getElementById('userManagerList');
     dom.bannerLeft = document.getElementById('bannerLeft');
     dom.bannerRight = document.getElementById('bannerRight');
@@ -161,6 +261,20 @@ function cacheDom() {
     dom.announcementImagePreviewList = document.getElementById('announcementImagePreviewList');
     dom.announcementImageZoomModal = document.getElementById('announcementImageZoomModal');
     dom.announcementImageZoom = document.getElementById('announcementImageZoom');
+    dom.exportPdfModal = document.getElementById('exportPdfModal');
+    dom.exportScopeCurrent = document.getElementById('exportScopeCurrent');
+    dom.exportScopeAll = document.getElementById('exportScopeAll');
+    dom.pdfName = document.getElementById('pdfName');
+    dom.pdfEmpId = document.getElementById('pdfEmpId');
+    dom.pdfDept = document.getElementById('pdfDept');
+    dom.pdfDefaultReason = document.getElementById('pdfDefaultReason');
+    dom.pdfStartDate = document.getElementById('pdfStartDate');
+    dom.pdfEndDate = document.getElementById('pdfEndDate');
+    dom.savePdfBtn = document.getElementById('savePdfBtn');
+    dom.printPdfBtn = document.getElementById('printPdfBtn');
+    dom.useAnnualBtn = document.getElementById('useAnnualBtn');
+    dom.undoAnnualBtn = document.getElementById('undoAnnualBtn');
+    dom.resetAnnualBtn = document.getElementById('resetAnnualBtn');
     dom.countdownCard = document.getElementById('countdownCard');
     dom.countdownLabel = document.getElementById('countdownLabel');
     dom.countdownTimer = document.getElementById('countdownTimer');
@@ -302,6 +416,55 @@ function getCurrentUser() {
     return users.find((user) => user.id === currentUserId) || null;
 }
 
+function getCurrentUserProfile() {
+    const user = getCurrentUser();
+    if (!user) return null;
+    const profile = userProfilesByUser[String(user.id)] || {};
+    return {
+        userId: user.id,
+        displayName: String(profile.displayName || user.name || '').trim(),
+        empId: String(profile.empId || '').trim(),
+        dept: String(profile.dept || '').trim(),
+        annualRemainingHours: Number(profile.annualRemainingHours) || 0,
+        annualLastResetYear: Number(profile.annualLastResetYear) || new Date().getFullYear(),
+        annualHistory: Array.isArray(profile.annualHistory) ? profile.annualHistory : []
+    };
+}
+
+function formatAnnualHistoryTime(timestamp) {
+    const time = Number(timestamp);
+    if (!Number.isFinite(time) || time <= 0) return '未知时间';
+    return new Date(time).toLocaleString('zh-CN', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit'
+    });
+}
+
+function getLatestAnnualHistoryEntry(profile) {
+    const history = Array.isArray(profile?.annualHistory) ? profile.annualHistory : [];
+    if (!history.length) return null;
+    return history.reduce((latest, current) => {
+        const latestTime = Number(latest?.timestamp || 0);
+        const currentTime = Number(current?.timestamp || 0);
+        return currentTime > latestTime ? current : latest;
+    }, history[0]);
+}
+
+function getProfileForUser(userId) {
+    const user = users.find((item) => item.id === userId);
+    const profile = userProfilesByUser[String(userId)] || {};
+    return {
+        displayName: String(profile.displayName || user?.name || '').trim(),
+        empId: String(profile.empId || '').trim(),
+        dept: String(profile.dept || '').trim(),
+        annualRemainingHours: Number(profile.annualRemainingHours) || 0,
+        annualHistory: Array.isArray(profile.annualHistory) ? profile.annualHistory : []
+    };
+}
+
 function getCurrentUserData() {
     return overtimeDataByUser[String(currentUserId)] || {};
 }
@@ -319,6 +482,7 @@ async function apiFetch(path, options = {}, config = {}) {
     const { silent = false } = config;
     const headers = new Headers(options.headers || {});
     let body = options.body;
+    const method = String(options.method || 'GET').toUpperCase();
 
     if (body && typeof body === 'object' && !(body instanceof FormData)) {
         headers.set('Content-Type', 'application/json');
@@ -327,6 +491,10 @@ async function apiFetch(path, options = {}, config = {}) {
 
     if (adminToken) {
         headers.set('Authorization', `Bearer ${adminToken}`);
+    }
+
+    if (['POST', 'PATCH', 'PUT', 'DELETE'].includes(method) && currentDataToken) {
+        headers.set('X-Data-Token', currentDataToken);
     }
 
     const response = await fetch(`${API_BASE}${path}`, {
@@ -350,6 +518,18 @@ async function apiFetch(path, options = {}, config = {}) {
             isAdmin = false;
             updateAdminUI();
         }
+        if (response.status === 409 && payload && typeof payload === 'object' && payload.code === 'DATA_CONFLICT') {
+            currentDataToken = String(payload.currentToken || currentDataToken || '');
+            try {
+                await loadBootstrap({ preserveSelection: true, silent: true });
+            } catch {
+                // Ignore refresh errors and keep original conflict message.
+            }
+            if (!silent) {
+                alert('检测到他人已更新数据，你当前页面已自动刷新，请确认后重新提交');
+            }
+            throw new Error('DATA_CONFLICT');
+        }
         if (!silent) {
             alert(errorMessage || '请求失败');
         }
@@ -365,6 +545,57 @@ function formatMonthInput(date) {
 
 function getDateKey(date) {
     return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+function getReasonDraftKey(userId, dateKey) {
+    const uid = Number(userId);
+    const day = String(dateKey || '').trim();
+    if (!Number.isInteger(uid) || uid <= 0 || !day) return '';
+    return `${uid}::${day}`;
+}
+
+function syncReasonDraftFromDom() {
+    if (!selectedDate || !currentUserId) return;
+    const key = getReasonDraftKey(currentUserId, getDateKey(selectedDate));
+    if (!key) return;
+    overtimeReasonDraftByKey.set(key, String(dom.overtimeReason?.value || ''));
+    overtimeStartTimeDraftByKey.set(key, String(dom.startTime?.value || ''));
+    overtimeEndTimeDraftByKey.set(key, String(dom.endTime?.value || ''));
+}
+
+function clearReasonDraft(userId, dateKey) {
+    const key = getReasonDraftKey(userId, dateKey);
+    if (!key) return;
+    overtimeReasonDraftByKey.delete(key);
+    overtimeStartTimeDraftByKey.delete(key);
+    overtimeEndTimeDraftByKey.delete(key);
+}
+
+function getReasonInputValue(dateKey) {
+    const key = getReasonDraftKey(currentUserId, dateKey);
+    if (key && overtimeReasonDraftByKey.has(key)) {
+        return overtimeReasonDraftByKey.get(key);
+    }
+    const records = getCurrentUserData()[dateKey] || [];
+    return records[0]?.reason || '';
+}
+
+function getStartTimeInputValue(dateKey) {
+    const key = getReasonDraftKey(currentUserId, dateKey);
+    if (key && overtimeStartTimeDraftByKey.has(key)) {
+        return overtimeStartTimeDraftByKey.get(key);
+    }
+    const records = getCurrentUserData()[dateKey] || [];
+    return records[0]?.startTime || DEFAULT_START_TIME;
+}
+
+function getEndTimeInputValue(dateKey) {
+    const key = getReasonDraftKey(currentUserId, dateKey);
+    if (key && overtimeEndTimeDraftByKey.has(key)) {
+        return overtimeEndTimeDraftByKey.get(key);
+    }
+    const records = getCurrentUserData()[dateKey] || [];
+    return records[0]?.endTime || DEFAULT_END_TIME;
 }
 
 function formatAmount(amount) {
@@ -390,6 +621,297 @@ function formatMinutesShort(minutes) {
     if (hours === 0) return `${mins}分钟`;
     if (mins === 0) return `${hours}小时`;
     return `${hours}小时${mins}分`;
+}
+
+function dateKeyToDate(dateKey) {
+    return new Date(`${dateKey}T00:00:00`);
+}
+
+function formatDateToDateKey(date) {
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+function formatApplyDateTime(dateKey, time) {
+    const date = dateKeyToDate(dateKey);
+    if (Number.isNaN(date.getTime())) {
+        return `${dateKey} ${time || ''}`.trim();
+    }
+    const safeTime = String(time || '').trim() || '00:00';
+    return `${date.getFullYear()}年 ${date.getMonth() + 1} 月 ${date.getDate()}日${safeTime}时`;
+}
+
+function getPdfProfileMap() {
+    try {
+        const raw = localStorage.getItem(OVERTIME_PDF_PROFILE_STORAGE_KEY);
+        const parsed = raw ? JSON.parse(raw) : {};
+        return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+        return {};
+    }
+}
+
+function savePdfProfileMap(profileMap) {
+    localStorage.setItem(OVERTIME_PDF_PROFILE_STORAGE_KEY, JSON.stringify(profileMap || {}));
+}
+
+function getPdfProfileByUserId(userId) {
+    const profileMap = getPdfProfileMap();
+    const localProfile = profileMap[String(userId)] || { name: '', empId: '', dept: '', defaultReason: '' };
+    const serverProfile = getProfileForUser(userId);
+    return {
+        name: localProfile.name || serverProfile.displayName || '',
+        empId: localProfile.empId || serverProfile.empId || '',
+        dept: localProfile.dept || serverProfile.dept || '',
+        defaultReason: localProfile.defaultReason || ''
+    };
+}
+
+function savePdfProfileByUserId(userId, profile) {
+    const profileMap = getPdfProfileMap();
+    profileMap[String(userId)] = {
+        name: String(profile?.name || '').trim(),
+        empId: String(profile?.empId || '').trim(),
+        dept: String(profile?.dept || '').trim(),
+        defaultReason: String(profile?.defaultReason || '').trim()
+    };
+    savePdfProfileMap(profileMap);
+}
+
+function getRecordsByUserInRange(userId, startDateKey, endDateKey) {
+    const userData = overtimeDataByUser[String(userId)] || {};
+    const start = dateKeyToDate(startDateKey);
+    const end = dateKeyToDate(endDateKey);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+        return [];
+    }
+
+    const results = [];
+    Object.entries(userData).forEach(([dateKey, records]) => {
+        const date = dateKeyToDate(dateKey);
+        if (Number.isNaN(date.getTime())) return;
+        if (date < start || date > end) return;
+        records.forEach((record) => {
+            results.push({ ...record, date: dateKey, userId });
+        });
+    });
+
+    results.sort((a, b) => {
+        if (a.date === b.date) return Number(a.id || 0) - Number(b.id || 0);
+        return a.date.localeCompare(b.date);
+    });
+    return results;
+}
+
+const APPLY_FORMS_PER_PDF_PAGE = 4;
+
+const APPLY_FORM_EXCEL_ROW_PT = 36;
+const APPLY_FORM_EXCEL_GAP_PT = [18, 18, 22];
+
+function ptToMm(pt) {
+    return (Number(pt) || 0) * 25.4 / 72;
+}
+
+function buildApplyFormItemHtml(record, profile, fallbackReason, extraStyle = '') {
+    const safeProfile = profile || {};
+    const overtimeReason = String(record.reason || '').trim() || String(fallbackReason || '').trim() || '工作需要加班';
+    const startText = formatApplyDateTime(record.date, record.startTime);
+    const endText = formatApplyDateTime(record.date, record.endTime);
+
+    return `
+        <section class="apply-form-item"${extraStyle ? ` style="${escapeHtml(extraStyle)}"` : ''}>
+            <div class="apply-form-wrap">
+                <h2 class="apply-form-title">加班申请单</h2>
+                <table class="apply-form-table">
+                    <colgroup>
+                        <col style="width: 14.15%;">
+                        <col style="width: 19.41%;">
+                        <col style="width: 15.58%;">
+                        <col style="width: 17.29%;">
+                        <col style="width: 8.77%;">
+                        <col style="width: 24.80%;">
+                    </colgroup>
+                    <tr class="row-name">
+                        <td class="label">姓名</td>
+                        <td class="value">${escapeHtml(safeProfile.name || '')}</td>
+                        <td class="label">工号</td>
+                        <td class="value">${escapeHtml(safeProfile.empId || '')}</td>
+                        <td class="label">部门</td>
+                        <td class="value">${escapeHtml(safeProfile.dept || '')}</td>
+                    </tr>
+                    <tr class="row-time">
+                        <td class="label">加班时间</td>
+                        <td colspan="5" class="value" style="white-space: normal;">自${escapeHtml(startText)}至${escapeHtml(endText)}</td>
+                    </tr>
+                    <tr class="row-reason">
+                        <td class="label">加班事由</td>
+                        <td colspan="5" class="value" style="text-align: left; padding-left: 10px; padding-right: 10px;">${escapeHtml(overtimeReason)}</td>
+                    </tr>
+                    <tr class="row-sign">
+                        <td colspan="3" style="padding-left: 8px;">部门领导签字或盖章</td>
+                        <td colspan="3"></td>
+                    </tr>
+                </table>
+            </div>
+        </section>
+    `;
+}
+
+function buildApplyFormPagesHtml(exportList) {
+    const pages = [];
+    for (let i = 0; i < exportList.length; i += APPLY_FORMS_PER_PDF_PAGE) {
+        pages.push(exportList.slice(i, i + APPLY_FORMS_PER_PDF_PAGE));
+    }
+
+    const pageGapStyles = ['', 'margin-top: 6.35mm;', 'margin-top: 6.35mm;', 'margin-top: 7.76mm;'];
+
+    const pageHtml = pages.map((items) => {
+        const itemHtml = items.map((item, index) => buildApplyFormItemHtml(
+            item.record,
+            item.profile,
+            item.fallbackReason,
+            pageGapStyles[index] || ''
+        )).join('');
+        return `
+            <section class="apply-form-page">
+                ${itemHtml}
+            </section>
+        `;
+    }).join('');
+
+    return `
+        <style>
+            @font-face {
+                font-family: 'SimSunLocal';
+                src: url('/assets/fonts/SimSun.ttf') format('truetype');
+                font-weight: 400;
+                font-style: normal;
+            }
+            @font-face {
+                font-family: 'SimSunLocal';
+                src: url('/assets/fonts/SimSun-Bold.ttf') format('truetype');
+                font-weight: 700;
+                font-style: normal;
+            }
+            .apply-form-page {
+                width: 210mm;
+                min-height: 297mm;
+                height: 297mm;
+                padding: 3mm 17.8mm;
+                background: #fff;
+                page-break-after: always;
+                font-family: 'SimSunLocal','SimSun','NSimSun','Songti SC','宋体','STSong',serif;
+                color: #000;
+                overflow: hidden;
+                box-sizing: border-box;
+            }
+            .apply-form-item {
+                width: 100%;
+                margin: 0 auto;
+                break-inside: avoid;
+            }
+            .apply-form-page .apply-form-wrap { width: 100%; margin: 0 auto; }
+            .apply-form-page .apply-form-title { text-align: center; font-size: 16pt; line-height: 12.7mm; height: 12.7mm; margin: 0; font-weight: 700; font-family: 'SimSunLocal','SimSun','NSimSun','Songti SC','宋体','STSong',serif !important; }
+            .apply-form-page .apply-form-table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 14pt; line-height: 1.05; font-family: 'SimSunLocal','SimSun','NSimSun','Songti SC','宋体','STSong',serif !important; }
+            .apply-form-page .apply-form-table td { border: 0.5pt solid #000; padding: 0 2px; text-align: center; vertical-align: middle; word-break: break-word; overflow-wrap: anywhere; font-family: 'SimSunLocal','SimSun','NSimSun','Songti SC','宋体','STSong',serif !important; font-weight: 400; }
+            .apply-form-page .apply-form-table .label { white-space: nowrap; }
+            .apply-form-page .apply-form-table .value { white-space: normal; }
+            .apply-form-page .row-name td { height: 12.7mm; }
+            .apply-form-page .row-time td { height: 12.7mm; }
+            .apply-form-page .row-reason td { height: 12.7mm; }
+            .apply-form-page .row-sign td { height: 12.7mm; text-align: left; }
+        </style>
+        ${pageHtml}
+    `;
+}
+
+function setExportFormByCurrentUser() {
+    const currentUser = getCurrentUser();
+    if (!currentUser) return;
+    const profile = getPdfProfileByUserId(currentUser.id);
+    dom.pdfName.value = profile.name || currentUser.name || '';
+    dom.pdfEmpId.value = profile.empId || '';
+    dom.pdfDept.value = profile.dept || '';
+    dom.pdfDefaultReason.value = profile.defaultReason || '';
+}
+
+function getGlobalDateRangeFromAllRecords() {
+    const allDateKeys = [];
+    Object.values(overtimeDataByUser).forEach((userData) => {
+        Object.keys(userData || {}).forEach((dateKey) => allDateKeys.push(dateKey));
+    });
+    if (!allDateKeys.length) {
+        const todayKey = formatDateToDateKey(new Date());
+        return { startDateKey: todayKey, endDateKey: todayKey };
+    }
+    allDateKeys.sort((a, b) => a.localeCompare(b));
+    return { startDateKey: allDateKeys[0], endDateKey: allDateKeys[allDateKeys.length - 1] };
+}
+
+function getDefaultExportDateRange(refDate = new Date()) {
+    const year = refDate.getFullYear();
+    const month = refDate.getMonth();
+    const day = refDate.getDate();
+    if (day <= 14) {
+        return {
+            startDateKey: `${year}-${String(month + 1).padStart(2, '0')}-01`,
+            endDateKey: `${year}-${String(month + 1).padStart(2, '0')}-14`
+        };
+    }
+
+    function openPrintableApplyFormsWindow(exportList, titleText) {
+        const printWindow = window.open('', '_blank', 'noopener,noreferrer,width=980,height=720');
+        if (!printWindow) {
+            alert('浏览器拦截了打印窗口，请允许弹窗后重试');
+            return;
+        }
+
+        const title = String(titleText || '加班申请表').trim();
+        const contentHtml = buildApplyFormPagesHtml(exportList);
+        printWindow.document.open();
+        printWindow.document.write(`
+            <!DOCTYPE html>
+            <html lang="zh-CN">
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>${escapeHtml(title)}</title>
+                <style>
+                    html, body { margin: 0; padding: 0; background: #f3f4f6; }
+                    body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+                    @page { size: A4 portrait; margin: 0; }
+                    @media print {
+                        body { background: #fff; }
+                        .apply-form-page { page-break-after: always; }
+                        .apply-form-page:last-child { page-break-after: auto; }
+                    }
+                </style>
+            </head>
+            <body>
+                ${contentHtml}
+                <script>
+                    window.addEventListener('load', () => {
+                        setTimeout(() => {
+                            window.focus();
+                            window.print();
+                        }, 250);
+                    });
+                </script>
+            </body>
+            </html>
+        `);
+        printWindow.document.close();
+    }
+    if (day <= 25) {
+        return {
+            startDateKey: `${year}-${String(month + 1).padStart(2, '0')}-15`,
+            endDateKey: `${year}-${String(month + 1).padStart(2, '0')}-24`
+        };
+    }
+    const lastDay = new Date(year, month + 1, 0).getDate();
+    return {
+        startDateKey: `${year}-${String(month + 1).padStart(2, '0')}-25`,
+        endDateKey: `${year}-${String(month + 1).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`
+    };
 }
 
 function calculateTimeDifference(startTime, endTime) {
@@ -805,6 +1327,9 @@ function updateActionAvailability() {
     dom.prevMonth.disabled = !hasUsers;
     dom.nextMonth.disabled = !hasUsers;
     dom.monthSelector.disabled = !hasUsers;
+    if (dom.useAnnualBtn) dom.useAnnualBtn.disabled = !hasUsers;
+    if (dom.undoAnnualBtn) dom.undoAnnualBtn.disabled = !hasUsers;
+    if (dom.resetAnnualBtn) dom.resetAnnualBtn.disabled = !hasUsers;
 }
 
 function buildUserButtons() {
@@ -819,7 +1344,8 @@ function buildUserButtons() {
         const button = document.createElement('button');
         button.className = `person-btn ${user.id === currentUserId ? 'active' : ''}`;
         button.dataset.userId = String(user.id);
-        button.innerHTML = `<i class="fas fa-user"></i> ${escapeHtml(user.name)}`;
+        const profile = getProfileForUser(user.id);
+        button.innerHTML = `<i class="fas fa-user"></i> ${escapeHtml(profile.nickname || user.name)}`;
         button.addEventListener('click', () => switchUser(user.id));
         dom.personSwitchBar.appendChild(button);
     });
@@ -827,6 +1353,7 @@ function buildUserButtons() {
 
 function switchUser(userId) {
     if (userId === currentUserId) return;
+    syncReasonDraftFromDom();
     currentUserId = userId;
     setStoredSelectedUserId(userId);
     renderAll();
@@ -834,7 +1361,9 @@ function switchUser(userId) {
 
 function updatePersonTitle() {
     const user = getCurrentUser();
-    dom.currentPersonTitle.innerHTML = user ? `👤 ${escapeHtml(user.name)} · 加班统计` : '👤 暂无用户';
+    const profile = getCurrentUserProfile();
+    const nickname = profile?.nickname || profile?.displayName || user?.name || '';
+    dom.currentPersonTitle.innerHTML = user ? `👤 ${escapeHtml(nickname)} · 加班统计` : '👤 暂无用户';
 }
 
 function updateStats() {
@@ -870,6 +1399,10 @@ function updateStats() {
     dom.monthlyAmount.innerText = formatAmount(monthlyAmount);
     dom.overtimeDays.innerText = String(overtimeDays);
     dom.yearlyAmount.innerText = formatAmount(yearlyAmount);
+    const profile = getCurrentUserProfile();
+    if (dom.annualLeaveRemaining) {
+        dom.annualLeaveRemaining.innerText = `${Math.floor(profile?.annualRemainingHours || 0)}`;
+    }
 }
 
 function updateCalendar() {
@@ -993,6 +1526,7 @@ function updateOvertimeList() {
     records.forEach((record) => {
         const minutes = Number(record.minutes) || 0;
         const amount = Number(record.amount) || 0;
+        const reason = String(record.reason || '').trim();
         dayMinutes += minutes;
         dayAmount += amount;
         html += `
@@ -1002,6 +1536,7 @@ function updateOvertimeList() {
                     <div><span>${formatMinutes(minutes)}</span> | <span>${formatAmount(amount)}元</span></div>
                 </div>
                 <div class="overtime-time-range">${escapeHtml(record.startTime)} - ${escapeHtml(record.endTime)}</div>
+                ${reason ? `<div class="helper-text" style="margin-top: 6px; color: #475569;">事由：${escapeHtml(reason)}</div>` : ''}
                 <button class="btn btn-delete record-delete-btn" data-record-id="${record.id}" style="margin-top:8px; padding:4px 12px;">删除</button>
             </div>`;
     });
@@ -1087,7 +1622,19 @@ function updateCountdown() {
 }
 
 function selectDate(date) {
+    syncReasonDraftFromDom();
     selectedDate = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+    const dateKey = getDateKey(selectedDate);
+    if (dom.startTime) {
+        dom.startTime.value = getStartTimeInputValue(dateKey);
+    }
+    if (dom.endTime) {
+        dom.endTime.value = getEndTimeInputValue(dateKey);
+    }
+    if (dom.overtimeReason) {
+        dom.overtimeReason.value = getReasonInputValue(dateKey);
+    }
+    updateResultDisplay();
     updateCalendar();
     updateOvertimeList();
     updateSelectedDateInfo();
@@ -1100,17 +1647,22 @@ function renderUserManager() {
         return;
     }
 
-    dom.userManagerList.innerHTML = users.map((user) => `
+    dom.userManagerList.innerHTML = users.map((user) => {
+        const profile = getProfileForUser(user.id);
+        const annualHours = Number(profile.annualRemainingHours) || 0;
+        return `
         <div class="user-manager-item">
-            <div>
-                <div class="user-manager-name">${escapeHtml(user.name)}</div>
-                <div class="helper-text">用户 ID：${user.id}</div>
+            <div style="flex:1; min-width: 0;">
+                <div class="user-manager-name">${escapeHtml(profile.nickname || user.name || '')}</div>
+                <div class="helper-text">打印姓名：${escapeHtml(profile.displayName || user.name || '-')} · 工号：${escapeHtml(profile.empId || '-')} · 部门：${escapeHtml(profile.dept || '-')}</div>
+                <div class="helper-text">年假余额：${annualHours.toFixed(1)} 小时</div>
             </div>
             <div class="user-manager-actions">
-                <button class="btn btn-rename rename-user-btn" data-user-id="${user.id}" data-user-name="${escapeHtml(user.name)}" ${!isAdmin ? 'disabled' : ''}>重命名</button>
-                <button class="btn btn-delete delete-user-btn" data-user-id="${user.id}" data-user-name="${escapeHtml(user.name)}" ${!isAdmin ? 'disabled' : ''}>删除</button>
+                <button class="btn btn-rename edit-user-btn" data-user-id="${user.id}" ${!isAdmin ? 'disabled' : ''}>编辑资料</button>
+                <button class="btn btn-delete delete-user-btn" data-user-id="${user.id}" data-user-name="${escapeHtml(profile.nickname || user.name || '')}" ${!isAdmin ? 'disabled' : ''}>删除</button>
             </div>
-        </div>`).join('');
+        </div>`;
+    }).join('');
 }
 
 function renderCompareModal() {
@@ -1129,7 +1681,7 @@ function renderCompareModal() {
     const monthStar = getStarOfPeriod((selectedYear, selectedMonth) => getMonthRange(selectedYear, selectedMonth), year, month);
     const yearStar = getStarOfPeriod((selectedYear) => getYearRange(selectedYear), year);
 
-    dom.compareModalTitle.innerHTML = `<i class="fas fa-users"></i> ${escapeHtml(users.map((user) => user.name).join(' · '))} 数据对比 & 加班之星`;
+    dom.compareModalTitle.innerHTML = `<i class="fas fa-users"></i> ${escapeHtml(users.map((user) => getProfileForUser(user.id).nickname || user.name).join(' · '))} 数据对比 & 加班之星`;
 
     let html = `
         <div class="star-cards">
@@ -1165,9 +1717,10 @@ function renderCompareModal() {
 
     users.forEach((user) => {
         const summary = stats[user.id] || { monthMinutes: 0, monthAmount: '0.00', overtimeDays: 0, yearAmount: '0.00' };
+        const profile = getProfileForUser(user.id);
         html += `
             <tr>
-                <td><span class="person-name-badge">${escapeHtml(user.name)}</span></td>
+                <td><span class="person-name-badge">${escapeHtml(profile.nickname || user.name)}</span></td>
                 <td><strong>${formatMinutesShort(summary.monthMinutes)}</strong></td>
                 <td class="compare-highlight">${summary.monthAmount}</td>
                 <td>${summary.overtimeDays} 天</td>
@@ -1446,6 +1999,16 @@ function renderAll() {
     updateSelectedDateInfo();
     updateOvertimeList();
     updateCountdown();
+    const dateKey = selectedDate ? getDateKey(selectedDate) : '';
+    if (dom.startTime) {
+        dom.startTime.value = dateKey ? getStartTimeInputValue(dateKey) : DEFAULT_START_TIME;
+    }
+    if (dom.endTime) {
+        dom.endTime.value = dateKey ? getEndTimeInputValue(dateKey) : DEFAULT_END_TIME;
+    }
+    if (dom.overtimeReason) {
+        dom.overtimeReason.value = dateKey ? getReasonInputValue(dateKey) : '';
+    }
     renderUserManager();
     renderBanners();
     renderAnnouncements();
@@ -1454,6 +2017,7 @@ function renderAll() {
 }
 
 async function loadBootstrap({ preserveSelection = true, silent = false } = {}) {
+    syncReasonDraftFromDom();
     const previousUserId = preserveSelection ? currentUserId : null;
     const storedUserId = getStoredSelectedUserId();
     const preferredUserId = previousUserId ?? storedUserId;
@@ -1462,8 +2026,10 @@ async function loadBootstrap({ preserveSelection = true, silent = false } = {}) 
     const payload = await apiFetch('/bootstrap', {}, { silent });
     users = Array.isArray(payload?.users) ? payload.users : [];
     overtimeDataByUser = payload?.overtimeData || {};
+    userProfilesByUser = payload?.userProfiles || {};
     announcements = Array.isArray(payload?.announcements) ? payload.announcements : [];
     isAdmin = Boolean(payload?.isAdmin);
+    currentDataToken = String(payload?.dataToken || currentDataToken || '');
 
     if (users.length) {
         const matchedUser = users.find((user) => user.id === preferredUserId);
@@ -1491,8 +2057,13 @@ async function addOvertimeRecord() {
     const type = dom.overtimeType.value;
     const startTime = dom.startTime.value;
     const endTime = dom.endTime.value;
+    const reason = String(dom.overtimeReason?.value || '').trim();
     if (!startTime || !endTime) {
         alert('请填写时间');
+        return;
+    }
+    if (reason.length > 120) {
+        alert('加班事由不能超过120个字符');
         return;
     }
 
@@ -1509,9 +2080,12 @@ async function addOvertimeRecord() {
             date: getDateKey(selectedDate),
             type,
             startTime,
-            endTime
+            endTime,
+            reason
         }
     });
+
+    clearReasonDraft(currentUserId, getDateKey(selectedDate));
 
     await loadBootstrap({ preserveSelection: true, silent: true });
     const dateKey = getDateKey(selectedDate);
@@ -1533,6 +2107,7 @@ async function clearDayRecords(date) {
         method: 'POST',
         body: { userId: currentUserId, date: dateKey }
     });
+    clearReasonDraft(currentUserId, dateKey);
     await loadBootstrap({ preserveSelection: true, silent: true });
 }
 
@@ -1582,6 +2157,539 @@ function closeModal(modalId) {
     if (modal) modal.classList.remove('active');
 }
 
+function renderProfileManagerModal() {
+    const user = getCurrentUser();
+    if (!user) {
+        if (dom.profileNickname) dom.profileNickname.value = '';
+        if (dom.profileDisplayName) dom.profileDisplayName.value = '';
+        if (dom.profileEmpId) dom.profileEmpId.value = '';
+        if (dom.profileDept) dom.profileDept.value = '';
+        if (dom.profileAnnualSummary) dom.profileAnnualSummary.innerText = '暂无用户';
+        if (dom.annualHistoryList) dom.annualHistoryList.innerHTML = '<div class="list-empty">暂无年假使用记录</div>';
+        return;
+    }
+
+    const profile = getCurrentUserProfile();
+    dom.profileNickname.value = profile?.nickname || '';
+    dom.profileDisplayName.value = profile?.displayName || user.name || '';
+    dom.profileEmpId.value = profile?.empId || '';
+    dom.profileDept.value = profile?.dept || '';
+    const annualHours = Number(profile?.annualRemainingHours) || 0;
+    const annualDays = annualHours / ANNUAL_HOURS_PER_DAY;
+    dom.profileAnnualSummary.innerText = `当前用户：${profile?.nickname || profile?.displayName || user.name} | 打印姓名：${profile?.displayName || user.name} | 年假余额：${annualHours.toFixed(1)} 小时（${annualDays.toFixed(2)} 天）`;
+
+    const history = Array.isArray(profile?.annualHistory) ? [...profile.annualHistory] : [];
+    history.sort((a, b) => Number(b?.timestamp || 0) - Number(a?.timestamp || 0));
+    if (!history.length) {
+        dom.annualHistoryList.innerHTML = '<div class="list-empty">暂无年假使用记录</div>';
+    } else {
+        dom.annualHistoryList.innerHTML = history.map((item) => {
+            const used = Number(item?.used) || 0;
+            const when = formatAnnualHistoryTime(item?.timestamp);
+            return `<div class="profile-history-item"><span>${escapeHtml(when)}</span><strong>使用 ${used.toFixed(1)} 小时</strong></div>`;
+        }).join('');
+    }
+
+    if (!dom.allUsersAnnualOverview) return;
+    if (!users.length) {
+        dom.allUsersAnnualOverview.innerHTML = '<div class="list-empty">暂无用户数据</div>';
+        return;
+    }
+
+    const cardsHtml = users.map((item) => {
+        const itemProfile = getProfileForUser(item.id);
+        const remainingHours = Number(itemProfile.annualRemainingHours) || 0;
+        const latest = getLatestAnnualHistoryEntry(itemProfile);
+        const latestText = latest
+            ? `${formatAnnualHistoryTime(latest.timestamp)} 使用 ${Number(latest.used || 0).toFixed(1)} 小时`
+            : '暂无使用记录';
+
+        return `
+            <div class="all-users-overview-card">
+                <div class="all-users-overview-name">
+                    <span>${escapeHtml(itemProfile.nickname || itemProfile.displayName || item.name)}</span>
+                    <span class="all-users-overview-annual">${remainingHours.toFixed(1)}h</span>
+                </div>
+                <div class="all-users-overview-meta">打印名：${escapeHtml(itemProfile.displayName || item.name)}</div>
+                <div class="all-users-overview-meta">工号：${escapeHtml(itemProfile.empId || '-')}</div>
+                <div class="all-users-overview-meta">部门：${escapeHtml(itemProfile.dept || '-')}</div>
+                <div class="all-users-overview-meta">最近使用：${escapeHtml(latestText)}</div>
+            </div>
+        `;
+    }).join('');
+
+    dom.allUsersAnnualOverview.innerHTML = cardsHtml;
+}
+
+function openProfileManagerModal() {
+    if (!getCurrentUser()) {
+        alert('请先选择用户');
+        return;
+    }
+    renderProfileManagerModal();
+    openModal('profileManagerModal');
+}
+
+async function saveCurrentUserProfile() {
+    const user = getCurrentUser();
+    if (!user) {
+        alert('请先选择用户');
+        return;
+    }
+
+    const nickname = String(dom.profileNickname?.value || '').trim();
+    const displayName = String(dom.profileDisplayName?.value || '').trim();
+    const empId = String(dom.profileEmpId?.value || '').trim();
+    const dept = String(dom.profileDept?.value || '').trim();
+    if (!displayName) {
+        alert('打印姓名不能为空');
+        return;
+    }
+
+    await apiFetch(`/users/${user.id}/profile`, {
+        method: 'PATCH',
+        body: { nickname, displayName, empId, dept }
+    });
+    await loadBootstrap({ preserveSelection: true, silent: true });
+    renderProfileManagerModal();
+    alert('资料已保存');
+}
+
+async function useAnnualLeaveFromPanel() {
+    const user = getCurrentUser();
+    if (!user) return;
+    const profile = getCurrentUserProfile();
+    const remaining = Number(profile?.annualRemainingHours) || 0;
+    if (remaining <= 0) {
+        alert('年假余额不足');
+        return;
+    }
+
+    const raw = prompt(`当前剩余 ${remaining.toFixed(1)} 小时，输入本次使用小时数`, '1');
+    if (raw === null) return;
+    const hours = Number(raw);
+    if (!Number.isFinite(hours) || hours <= 0) {
+        alert('请输入大于0的数字');
+        return;
+    }
+
+    await apiFetch(`/users/${user.id}/annual/use`, {
+        method: 'POST',
+        body: { hours }
+    });
+    await loadBootstrap({ preserveSelection: true, silent: true });
+    renderProfileManagerModal();
+}
+
+async function undoAnnualLeaveFromPanel() {
+    const user = getCurrentUser();
+    if (!user) return;
+    await apiFetch(`/users/${user.id}/annual/undo`, { method: 'POST' });
+    await loadBootstrap({ preserveSelection: true, silent: true });
+    renderProfileManagerModal();
+}
+
+async function resetAnnualLeaveFromPanel() {
+    const user = getCurrentUser();
+    if (!user) return;
+    const rawDays = prompt('输入重置后的年假天数（1天=8小时）', String(DEFAULT_ANNUAL_DAYS));
+    if (rawDays === null) return;
+    const days = Number(rawDays);
+    if (!Number.isFinite(days) || days < 0) {
+        alert('请输入大于等于0的数字');
+        return;
+    }
+
+    if (!confirm(`确认将年假重置为 ${days.toFixed(2)} 天吗？`)) {
+        return;
+    }
+
+    await apiFetch(`/users/${user.id}/annual/reset`, {
+        method: 'POST',
+        body: { days }
+    });
+    await loadBootstrap({ preserveSelection: true, silent: true });
+    renderProfileManagerModal();
+}
+
+function updateExportScopeUi() {
+    if (!dom.exportScopeCurrent || !dom.exportScopeAll) return;
+    const isAll = dom.exportScopeAll.checked;
+    dom.pdfName.disabled = isAll;
+    dom.pdfEmpId.disabled = isAll;
+    dom.pdfDept.disabled = isAll;
+    if (isAll) {
+        dom.pdfName.placeholder = '全员模式自动使用每位用户资料';
+        dom.pdfEmpId.placeholder = '全员模式自动使用每位用户资料';
+        dom.pdfDept.placeholder = '全员模式自动使用每位用户资料';
+    } else {
+        dom.pdfName.placeholder = '当前人员姓名';
+        dom.pdfEmpId.placeholder = '例如 T1762';
+        dom.pdfDept.placeholder = '例如 天乐达软件部';
+    }
+}
+
+function openExportPdfModal(scope = 'current') {
+    if (!users.length || !getCurrentUser()) {
+        alert('暂无可导出的用户数据');
+        return;
+    }
+
+    if (scope === 'all') {
+        dom.exportScopeAll.checked = true;
+    } else {
+        dom.exportScopeCurrent.checked = true;
+    }
+
+    setExportFormByCurrentUser();
+    const { startDateKey, endDateKey } = getDefaultExportDateRange(new Date());
+    dom.pdfStartDate.value = startDateKey;
+    dom.pdfEndDate.value = endDateKey;
+    updateExportScopeUi();
+    openModal('exportPdfModal');
+}
+
+function buildExportRecords(scope, startDateKey, endDateKey, fallbackReason) {
+    if (scope === 'all') {
+        const list = [];
+        users.forEach((user) => {
+            const profile = getPdfProfileByUserId(user.id);
+            const records = getRecordsByUserInRange(user.id, startDateKey, endDateKey);
+            records.forEach((record) => {
+                list.push({
+                    record,
+                    profile: {
+                        name: profile.name || user.name,
+                        empId: profile.empId || '',
+                        dept: profile.dept || ''
+                    },
+                    fallbackReason: profile.defaultReason || fallbackReason || ''
+                });
+            });
+        });
+
+        list.sort((a, b) => {
+            if (a.record.date === b.record.date) {
+                return Number(a.record.userId || 0) - Number(b.record.userId || 0);
+            }
+            return a.record.date.localeCompare(b.record.date);
+        });
+        return list;
+    }
+
+    const currentUser = getCurrentUser();
+    if (!currentUser) return [];
+    const profile = {
+        name: String(dom.pdfName.value || '').trim() || currentUser.name,
+        empId: String(dom.pdfEmpId.value || '').trim(),
+        dept: String(dom.pdfDept.value || '').trim()
+    };
+    const records = getRecordsByUserInRange(currentUser.id, startDateKey, endDateKey);
+    return records.map((record) => ({
+        record,
+        profile,
+        fallbackReason
+    }));
+}
+
+function chunkArray(source, size) {
+    const list = Array.isArray(source) ? source : [];
+    const step = Math.max(1, Number(size) || 1);
+    const result = [];
+    for (let i = 0; i < list.length; i += step) {
+        result.push(list.slice(i, i + step));
+    }
+    return result;
+}
+
+function arrayBufferToBase64(buffer) {
+    const bytes = new Uint8Array(buffer || new ArrayBuffer(0));
+    let binary = '';
+    const chunkSize = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+        const chunk = bytes.subarray(i, i + chunkSize);
+        binary += String.fromCharCode(...chunk);
+    }
+    return btoa(binary);
+}
+
+async function loadPdfTextFontBase64(sources = PDF_TEXT_FONT_SOURCES, cacheKey = 'regular') {
+    const promiseKey = cacheKey === 'bold' ? 'pdfTextFontBoldBase64Promise' : 'pdfTextFontBase64Promise';
+    const existingPromise = cacheKey === 'bold' ? pdfTextFontBoldBase64Promise : pdfTextFontBase64Promise;
+    if (!existingPromise) {
+        const promise = (async () => {
+            let lastError = null;
+            for (const fontUrl of sources) {
+                try {
+                    const response = await fetch(fontUrl, { cache: 'force-cache' });
+                    if (!response.ok) {
+                        throw new Error(`字体下载失败: ${response.status}`);
+                    }
+                    const buffer = await response.arrayBuffer();
+                    return arrayBufferToBase64(buffer);
+                } catch (error) {
+                    lastError = error;
+                }
+            }
+            throw lastError || new Error('字体下载失败');
+        })().catch((error) => {
+            if (cacheKey === 'bold') {
+                pdfTextFontBoldBase64Promise = null;
+            } else {
+                pdfTextFontBase64Promise = null;
+            }
+            throw error;
+        });
+        if (cacheKey === 'bold') {
+            pdfTextFontBoldBase64Promise = promise;
+        } else {
+            pdfTextFontBase64Promise = promise;
+        }
+    }
+    return cacheKey === 'bold' ? pdfTextFontBoldBase64Promise : pdfTextFontBase64Promise;
+}
+
+async function ensurePdfTextFont(pdf) {
+    if (!pdf || typeof pdf.addFileToVFS !== 'function' || typeof pdf.addFont !== 'function') {
+        throw new Error('当前 jsPDF 版本不支持自定义字体');
+    }
+    const fontList = pdf.getFontList ? pdf.getFontList() : {};
+
+    // Register normal font
+    if (!fontList[PDF_TEXT_FONT_NAME]) {
+        const regularBase64 = await loadPdfTextFontBase64(PDF_TEXT_FONT_SOURCES, 'regular');
+        pdf.addFileToVFS(PDF_TEXT_FONT_FILE, regularBase64);
+        pdf.addFont(PDF_TEXT_FONT_FILE, PDF_TEXT_FONT_NAME, 'normal');
+    }
+
+    // Register bold font as a separate font family
+    if (!fontList[PDF_TEXT_FONT_BOLD_NAME]) {
+        try {
+            const boldBase64 = await loadPdfTextFontBase64(PDF_TEXT_FONT_BOLD_SOURCES, 'bold');
+            pdf.addFileToVFS(PDF_TEXT_FONT_BOLD_FILE, boldBase64);
+            pdf.addFont(PDF_TEXT_FONT_BOLD_FILE, PDF_TEXT_FONT_BOLD_NAME, 'normal');
+        } catch (error) {
+            // Keep export available even when bold font embedding fails.
+            console.warn('粗体字体加载失败，标题将使用宋体描边加粗回退。', error);
+        }
+    }
+
+    pdf.setFont(PDF_TEXT_FONT_NAME, 'normal');
+}
+
+function drawPdfCellText(pdf, text, x, y, width, height, options = {}) {
+    const value = String(text || '').trim();
+    const align = options.align || 'center';
+    const fontSize = Number(options.fontSize || 10);
+    const paddingX = Number(options.paddingX || 1.8);
+    const maxTextWidth = Math.max(1, width - paddingX * 2);
+    const lines = value ? pdf.splitTextToSize(value, maxTextWidth) : [''];
+    const lineHeight = fontSize * 0.3528 * 1.2;
+    const textBlockHeight = lines.length * lineHeight;
+    let cursorY = y + (height - textBlockHeight) / 2 + lineHeight * 0.78;
+
+    pdf.setFontSize(fontSize);
+    lines.forEach((line) => {
+        let textX = x + width / 2;
+        let textAlign = 'center';
+        if (align === 'left') {
+            textX = x + paddingX;
+            textAlign = 'left';
+        } else if (align === 'right') {
+            textX = x + width - paddingX;
+            textAlign = 'right';
+        }
+        pdf.text(String(line || ''), textX, cursorY, { align: textAlign, baseline: 'alphabetic' });
+        cursorY += lineHeight;
+    });
+}
+
+function drawApplyFormTextPage(pdf, item, originY, formHeight) {
+    // 对标原 Excel 表格格式：
+    // - 列宽：A=12.56, B=17.22, C=13.81, D=15.33, E=7.78, F=22（单位：字符宽）
+    // - 比例：A:B:C:D:E:F ≈ 14.15:19.41:15.58:17.29:8.77:24.80
+    // - 行高：标题 36pt，表体 4 行各 36pt
+    // - 空白分隔：18pt、18pt、22pt
+    // - 边框：thin（0.35pt）黑色
+    // - 字体：宋体 14pt，标题 16pt 加粗
+    // - 页边距：左右各 10mm
+
+    const pageWidth = 210;
+    const marginLR = 17.8;
+    const tableWidth = pageWidth - marginLR * 2;
+
+    const left = marginLR;
+    const width = tableWidth;
+    const titleHeight = ptToMm(APPLY_FORM_EXCEL_ROW_PT);
+    const rowHeight = ptToMm(APPLY_FORM_EXCEL_ROW_PT);
+    const tableTop = originY + titleHeight;
+    const tableHeight = rowHeight * 4;
+    const rowHeights = [rowHeight, rowHeight, rowHeight, rowHeight];
+
+    // 列宽比例（来自原表的归一化）
+    const colPercents = [14.15, 19.41, 15.58, 17.29, 8.77, 24.80];
+    const colWidths = colPercents.map((percent) => (width * percent) / 100);
+    const colX = [left];
+    colWidths.forEach((w) => colX.push(colX[colX.length - 1] + w));
+
+    const safeProfile = item?.profile || {};
+    const record = item?.record || {};
+    const reason = String(record.reason || '').trim() || String(item?.fallbackReason || '').trim() || '工作需要加班';
+    const startText = formatApplyDateTime(record.date, record.startTime);
+    const endText = formatApplyDateTime(record.date, record.endTime);
+    const timeRangeText = `自${startText}至${endText}`;
+
+    pdf.setLineWidth(0.35);  // thin 边框
+    pdf.setDrawColor(0, 0, 0);  // 黑色
+    pdf.setTextColor(0, 0, 0);
+
+    // 标题：固定使用可稳定出字的宋体正常体，并用描边增强字重，避免粗体字形映射导致标题消失。
+    const titleX = left + width / 2;
+    const titleLineHeight = 16 * 0.3528 * 1.1;
+    const titleY = originY + (titleHeight - titleLineHeight) / 2 + titleLineHeight * 0.82;
+    pdf.setFont(PDF_TEXT_FONT_NAME, 'normal');
+    pdf.setFontSize(16);
+    pdf.setLineWidth(0.12);
+    pdf.text('加班申请单', titleX, titleY, {
+        align: 'center',
+        baseline: 'alphabetic',
+        renderingMode: 'fillThenStroke'
+    });
+    pdf.setFont(PDF_TEXT_FONT_NAME, 'normal');
+
+    // 外框
+    const tableBottom = tableTop + rowHeights.reduce((sum, h) => sum + h, 0);
+    pdf.rect(left, tableTop, width, tableBottom - tableTop);
+
+    // 3 条横线（分隔 4 行）
+    const y1 = tableTop + rowHeights[0];
+    const y2 = y1 + rowHeights[1];
+    const y3 = y2 + rowHeights[2];
+    pdf.line(left, y1, left + width, y1);
+    pdf.line(left, y2, left + width, y2);
+    pdf.line(left, y3, left + width, y3);
+
+    // 第一行（标题行）的 6 列竖线
+    for (let i = 1; i <= 5; i += 1) {
+        pdf.line(colX[i], tableTop, colX[i], y1);
+    }
+    
+    // 第二、三行的 A-B 列分隔线
+    pdf.line(colX[1], y1, colX[1], y3);
+    
+    // 第四行的 A-C / D-F 分隔线
+    pdf.line(colX[3], y3, colX[3], tableBottom);
+
+    // 第一行数据（姓名、工号、部门）
+    const row1Y = tableTop;
+    drawPdfCellText(pdf, '姓名', colX[0], row1Y, colWidths[0], rowHeights[0], { fontSize: 14, align: 'center' });
+    drawPdfCellText(pdf, safeProfile.name || '', colX[1], row1Y, colWidths[1], rowHeights[0], { fontSize: 14, align: 'center' });
+    drawPdfCellText(pdf, '工号', colX[2], row1Y, colWidths[2], rowHeights[0], { fontSize: 14, align: 'center' });
+    drawPdfCellText(pdf, safeProfile.empId || '', colX[3], row1Y, colWidths[3], rowHeights[0], { fontSize: 14, align: 'center' });
+    drawPdfCellText(pdf, '部门', colX[4], row1Y, colWidths[4], rowHeights[0], { fontSize: 14, align: 'center' });
+    drawPdfCellText(pdf, safeProfile.dept || '', colX[5], row1Y, colWidths[5], rowHeights[0], { fontSize: 14, align: 'center' });
+
+    // 第二行数据（加班时间）
+    drawPdfCellText(pdf, '加班时间', colX[0], y1, colWidths[0], rowHeights[1], { fontSize: 14, align: 'center' });
+    drawPdfCellText(pdf, timeRangeText, colX[1], y1, width - colWidths[0], rowHeights[1], { fontSize: 14, align: 'center' });
+
+    // 第三行数据（加班事由）
+    drawPdfCellText(pdf, '加班事由', colX[0], y2, colWidths[0], rowHeights[2], { fontSize: 14, align: 'center' });
+    drawPdfCellText(pdf, reason, colX[1], y2, width - colWidths[0], rowHeights[2], { fontSize: 14, align: 'left', paddingX: 2 });
+
+    // 第四行数据（签字栏）
+    drawPdfCellText(pdf, '部门领导签字或盖章', colX[0], y3, colWidths[0] + colWidths[1] + colWidths[2], rowHeights[3], { fontSize: 14, align: 'left', paddingX: 2 });
+}
+
+async function exportApplyFormsPdf(mode = 'save') {
+    if (!window.jspdf?.jsPDF) {
+        alert('PDF依赖加载失败，请刷新页面后重试');
+        return;
+    }
+
+    const startDateKey = String(dom.pdfStartDate.value || '').trim();
+    const endDateKey = String(dom.pdfEndDate.value || '').trim();
+    if (!startDateKey || !endDateKey) {
+        alert('请先选择导出日期范围');
+        return;
+    }
+    if (dateKeyToDate(startDateKey) > dateKeyToDate(endDateKey)) {
+        alert('开始日期不能晚于结束日期');
+        return;
+    }
+
+    const scope = dom.exportScopeAll.checked ? 'all' : 'current';
+    const defaultReason = String(dom.pdfDefaultReason.value || '').trim();
+    const exportList = buildExportRecords(scope, startDateKey, endDateKey, defaultReason);
+    if (!exportList.length) {
+        alert('所选日期范围内没有加班记录');
+        return;
+    }
+
+    const currentUser = getCurrentUser();
+    if (scope === 'current' && currentUser) {
+        savePdfProfileByUserId(currentUser.id, {
+            name: String(dom.pdfName.value || '').trim() || currentUser.name,
+            empId: String(dom.pdfEmpId.value || '').trim(),
+            dept: String(dom.pdfDept.value || '').trim(),
+            defaultReason
+        });
+    }
+
+    closeModal('exportPdfModal');
+
+    const loading = document.createElement('div');
+    loading.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.65); z-index:2500; display:flex; align-items:center; justify-content:center; color:#fff; font-size:18px;';
+    const pageCount = Math.ceil(exportList.length / APPLY_FORMS_PER_PDF_PAGE);
+    loading.textContent = `正在生成PDF（共${exportList.length}张申请单，${pageCount}页），请稍候...`;
+    document.body.appendChild(loading);
+
+    try {
+        const { jsPDF } = window.jspdf;
+        const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4', compress: true });
+        await ensurePdfTextFont(pdf);
+
+        const marginTop = 3;
+        const titleHeight = ptToMm(APPLY_FORM_EXCEL_ROW_PT);
+        const bodyRowHeight = ptToMm(APPLY_FORM_EXCEL_ROW_PT);
+        const formHeight = titleHeight + bodyRowHeight * 4;
+        const gapHeights = APPLY_FORM_EXCEL_GAP_PT.map((pt) => ptToMm(pt));
+        
+        const pages = chunkArray(exportList, APPLY_FORMS_PER_PDF_PAGE);
+
+        for (let pageIndex = 0; pageIndex < pages.length; pageIndex += 1) {
+            if (pageIndex > 0) pdf.addPage();
+            const formItems = pages[pageIndex];
+            formItems.forEach((item, index) => {
+                const gapBefore = gapHeights.slice(0, index).reduce((sum, value) => sum + value, 0);
+                const y = marginTop + index * formHeight + gapBefore;
+                drawApplyFormTextPage(pdf, item, y, formHeight);
+            });
+        }
+
+        const fileSuffix = scope === 'all'
+            ? '全员'
+            : (String(dom.pdfName.value || '').trim() || String(currentUser?.name || '当前人员'));
+        const fileName = `加班申请表_${fileSuffix}_${startDateKey}_${endDateKey}.pdf`;
+
+        if (mode === 'print') {
+            const blobUrl = pdf.output('bloburl');
+            const previewWindow = window.open(blobUrl, '_blank', 'noopener');
+            if (!previewWindow) {
+                alert('浏览器拦截了新窗口，请允许弹窗后重试打印');
+            }
+        } else {
+            pdf.save(fileName);
+        }
+    } catch (error) {
+        console.error('导出文本PDF失败:', error);
+        const fallbackTitle = scope === 'all' ? '全员加班申请表' : '当前人员加班申请表';
+        openPrintableApplyFormsWindow(exportList, fallbackTitle);
+    } finally {
+        loading.remove();
+    }
+}
+
 async function handleAdminAction() {
     if (isAdmin) {
         setAdminToken('');
@@ -1614,53 +2722,74 @@ async function handleAdminLogin(event) {
     alert('管理员登录成功');
 }
 
-async function handleAddUser(event) {
+function resetUserManagerForm() {
+    editingUserId = null;
+    if (dom.userNickname) dom.userNickname.value = '';
+    if (dom.userDisplayName) dom.userDisplayName.value = '';
+    if (dom.userEmpId) dom.userEmpId.value = '';
+    if (dom.userDept) dom.userDept.value = '';
+    if (dom.saveUserBtn) dom.saveUserBtn.innerHTML = '<i class="fas fa-user-plus"></i> 新增用户';
+    if (dom.cancelEditUserBtn) dom.cancelEditUserBtn.style.display = 'none';
+}
+
+function startEditUser(userId) {
+    const user = users.find((item) => item.id === userId);
+    if (!user) return;
+
+    const profile = getProfileForUser(userId);
+    editingUserId = userId;
+    if (dom.userNickname) dom.userNickname.value = profile.nickname || user.name || '';
+    if (dom.userDisplayName) dom.userDisplayName.value = profile.displayName || user.name || '';
+    if (dom.userEmpId) dom.userEmpId.value = profile.empId || '';
+    if (dom.userDept) dom.userDept.value = profile.dept || '';
+    if (dom.saveUserBtn) dom.saveUserBtn.innerHTML = '<i class="fas fa-save"></i> 保存修改';
+    if (dom.cancelEditUserBtn) dom.cancelEditUserBtn.style.display = '';
+}
+
+async function handleSaveUser(event) {
     event.preventDefault();
     if (!isAdmin) {
         alert('请先登录管理员');
         return;
     }
 
-    const name = dom.newUserName.value.trim();
-    if (!name) {
-        alert('请输入用户名称');
+    const nickname = String(dom.userNickname?.value || '').trim();
+    const displayName = String(dom.userDisplayName?.value || '').trim();
+    const empId = String(dom.userEmpId?.value || '').trim();
+    const dept = String(dom.userDept?.value || '').trim();
+    if (!nickname) {
+        alert('请输入主页昵称');
+        return;
+    }
+    if (!displayName) {
+        alert('请输入打印姓名');
         return;
     }
 
-    await apiFetch('/users', {
-        method: 'POST',
-        body: { name }
-    });
+    const payload = { nickname, displayName, empId, dept };
+    if (editingUserId) {
+        await apiFetch(`/users/${editingUserId}`, {
+            method: 'PATCH',
+            body: payload
+        });
+    } else {
+        await apiFetch('/users', {
+            method: 'POST',
+            body: payload
+        });
+    }
 
-    dom.newUserName.value = '';
+    resetUserManagerForm();
     await loadBootstrap({ preserveSelection: true, silent: true });
 }
 
-async function handleRenameUser(userId, userName) {
+async function handleRenameUser(userId) {
     if (!isAdmin) {
         alert('请先登录管理员');
         return;
     }
 
-    const nextName = prompt(`请输入“${userName}”的新名称`, userName);
-    if (nextName === null) {
-        return;
-    }
-
-    const trimmedName = nextName.trim();
-    if (!trimmedName) {
-        alert('用户名称不能为空');
-        return;
-    }
-    if (trimmedName === userName) {
-        return;
-    }
-
-    await apiFetch(`/users/${userId}`, {
-        method: 'PATCH',
-        body: { name: trimmedName }
-    });
-    await loadBootstrap({ preserveSelection: true, silent: true });
+    startEditUser(userId);
 }
 
 async function handleDeleteUser(userId, userName) {
@@ -1687,6 +2816,10 @@ async function handleEditBanner(announcementId, bannerType) {
         alert('公告不存在');
         return;
     }
+    if (!dom.bannerType || !dom.bannerContent) {
+        alert('当前页面未启用条幅编辑功能');
+        return;
+    }
 
     editingAnnouncementId = announcementId;
     dom.bannerType.value = bannerType === 'banner_left' ? '左侧条幅' : '右侧条幅';
@@ -1704,6 +2837,10 @@ async function handleSaveBanner(event) {
 
     if (!editingAnnouncementId) {
         alert('无效的编辑状态');
+        return;
+    }
+    if (!dom.bannerContent) {
+        alert('当前页面未启用条幅编辑功能');
         return;
     }
 
@@ -1862,18 +2999,63 @@ function bindEvents() {
         renderAll();
     });
 
-    dom.startTime.addEventListener('change', updateResultDisplay);
-    dom.endTime.addEventListener('change', updateResultDisplay);
+    dom.startTime.addEventListener('input', syncReasonDraftFromDom);
+    dom.endTime.addEventListener('input', syncReasonDraftFromDom);
+    dom.startTime.addEventListener('change', () => {
+        syncReasonDraftFromDom();
+        updateResultDisplay();
+    });
+    dom.endTime.addEventListener('change', () => {
+        syncReasonDraftFromDom();
+        updateResultDisplay();
+    });
+    if (dom.overtimeReason) {
+        dom.overtimeReason.addEventListener('input', syncReasonDraftFromDom);
+        dom.overtimeReason.addEventListener('change', syncReasonDraftFromDom);
+    }
     dom.addOvertimeBtn.addEventListener('click', addOvertimeRecord);
     dom.clearAllBtn.addEventListener('click', clearDayOvertimeBtn);
+    if (dom.exportCurrentPdfBtn) {
+        dom.exportCurrentPdfBtn.addEventListener('click', () => openExportPdfModal('current'));
+    }
+    if (dom.exportAllPdfBtn) {
+        dom.exportAllPdfBtn.addEventListener('click', () => openExportPdfModal('all'));
+    }
     dom.openCompareModalBtn.addEventListener('click', () => {
         renderCompareModal();
         openModal('compareModal');
     });
     dom.adminActionBtn.addEventListener('click', handleAdminAction);
-    dom.manageUsersBtn.addEventListener('click', () => openModal('userManagerModal'));
+    dom.manageUsersBtn.addEventListener('click', () => {
+        resetUserManagerForm();
+        openModal('userManagerModal');
+    });
     dom.adminLoginForm.addEventListener('submit', handleAdminLogin);
-    dom.addUserForm.addEventListener('submit', handleAddUser);
+    dom.addUserForm.addEventListener('submit', handleSaveUser);
+    if (dom.cancelEditUserBtn) {
+        dom.cancelEditUserBtn.addEventListener('click', () => resetUserManagerForm());
+    }
+    if (dom.exportScopeCurrent) {
+        dom.exportScopeCurrent.addEventListener('change', updateExportScopeUi);
+    }
+    if (dom.exportScopeAll) {
+        dom.exportScopeAll.addEventListener('change', updateExportScopeUi);
+    }
+    if (dom.savePdfBtn) {
+        dom.savePdfBtn.addEventListener('click', () => exportApplyFormsPdf('save'));
+    }
+    if (dom.printPdfBtn) {
+        dom.printPdfBtn.addEventListener('click', () => exportApplyFormsPdf('print'));
+    }
+    if (dom.useAnnualBtn) {
+        dom.useAnnualBtn.addEventListener('click', useAnnualLeaveFromPanel);
+    }
+    if (dom.undoAnnualBtn) {
+        dom.undoAnnualBtn.addEventListener('click', undoAnnualLeaveFromPanel);
+    }
+    if (dom.resetAnnualBtn) {
+        dom.resetAnnualBtn.addEventListener('click', resetAnnualLeaveFromPanel);
+    }
 
     if (dom.toggleDailyMediaBtn) {
         dom.toggleDailyMediaBtn.addEventListener('click', async () => {
@@ -1997,7 +3179,9 @@ function bindEvents() {
         }
     });
 
-    dom.editBannerForm.addEventListener('submit', handleSaveBanner);
+    if (dom.editBannerForm) {
+        dom.editBannerForm.addEventListener('submit', handleSaveBanner);
+    }
     dom.addAnnouncementBtn.addEventListener('click', () => {
         editingAnnouncementId = null;
         if (dom.announcementCategory) {
@@ -2073,9 +3257,9 @@ function bindEvents() {
     });
 
     dom.userManagerList.addEventListener('click', (event) => {
-        const renameButton = event.target.closest('.rename-user-btn');
-        if (renameButton && !renameButton.disabled) {
-            handleRenameUser(Number(renameButton.dataset.userId), renameButton.dataset.userName);
+        const editButton = event.target.closest('.edit-user-btn');
+        if (editButton && !editButton.disabled) {
+            startEditUser(Number(editButton.dataset.userId));
             return;
         }
 
@@ -2102,6 +3286,7 @@ async function init() {
     dom.monthSelector.value = formatMonthInput(currentDate);
     updateResultDisplay();
     bindEvents();
+    connectRealtimeStream();
     updateAnnouncementTypeInputState();
     const mediaVisible = getStoredDailyMediaVisible();
     updateDailyMediaVisibility(mediaVisible);

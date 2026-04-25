@@ -1,0 +1,30 @@
+cd /root/dlhost/data/overtime-calculator
+docker build -t overtime-calculator:1.0 .
+docker rm -f overtime-app 2>/dev/null || true
+docker run -d \
+  --name overtime-app \
+  --restart unless-stopped \
+  --network web \
+  -p 3000:3000 \
+  -e ADMIN_PASSWORD='rzq0.123' \
+  -e ADMIN_SECRET='e4481122e6739becacf84c7a81a4584ab90e678dca8d3bbbfb758e226cccfb0b' \
+  -e NODE_ID='cn-main' \
+  -e SYNC_PEER_URL='http://163.192.198.190:3000' \
+  -e SYNC_SHARED_SECRET='115add8401e43bfa03fed27cc3ca7af5f8f31aaca5ed51364680e5b70f8b3588' \
+  -v /root/dlhost/data/overtime-calculator-data:/app/data \
+  overtime-calculator:1.0
+
+docker run -d \
+  --name overtime-app \
+  --restart unless-stopped \
+  --network web \
+  -p 3000:3000 \
+  -e ADMIN_PASSWORD='rzq0.123' \
+  -e ADMIN_SECRET='e4481122e6739becacf84c7a81a4584ab90e678dca8d3bbbfb758e226cccfb0b' \
+  -e NODE_ID='oracle-backup' \
+  -e SYNC_PEER_URL='http://182.92.64.216:3000' \
+  -e SYNC_SHARED_SECRET='115add8401e43bfa03fed27cc3ca7af5f8f31aaca5ed51364680e5b70f8b3588' \
+  -v /root/dlhost/data/overtime-calculator-data:/app/data \
+  overtime-calculator:1.0
+  
+docker image prune -f

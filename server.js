@@ -14,6 +14,13 @@ const DB_PATH = process.env.DB_PATH || path.join(DATA_DIR, 'overtime.db');
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123456';
 const TOKEN_SECRET = process.env.ADMIN_SECRET || 'change-this-admin-secret';
 const TOKEN_TTL_MS = 1000 * 60 * 60 * 12;
+const ANNUAL_HOURS_PER_DAY = 8;
+const DEFAULT_ANNUAL_DAYS = Number(process.env.DEFAULT_ANNUAL_DAYS || 5);
+const DEFAULT_ANNUAL_HOURS = Math.max(0, DEFAULT_ANNUAL_DAYS) * ANNUAL_HOURS_PER_DAY;
+const NODE_ID = String(process.env.NODE_ID || crypto.randomBytes(6).toString('hex'));
+const SYNC_PEER_URL = String(process.env.SYNC_PEER_URL || '').trim().replace(/\/+$/, '');
+const SYNC_SHARED_SECRET = String(process.env.SYNC_SHARED_SECRET || '').trim();
+const ENABLE_PEER_SYNC = Boolean(SYNC_PEER_URL && SYNC_SHARED_SECRET);
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
@@ -35,6 +42,7 @@ db.exec(`
         type TEXT NOT NULL,
         start_time TEXT NOT NULL,
         end_time TEXT NOT NULL,
+        reason TEXT NOT NULL DEFAULT '',
         minutes INTEGER NOT NULL,
         amount REAL NOT NULL,
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -63,6 +71,19 @@ db.exec(`
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS user_profiles (
+        user_id INTEGER PRIMARY KEY,
+        nickname TEXT NOT NULL DEFAULT '',
+        display_name TEXT NOT NULL DEFAULT '',
+        emp_id TEXT NOT NULL DEFAULT '',
+        dept TEXT NOT NULL DEFAULT '',
+        annual_remaining_hours REAL NOT NULL DEFAULT 40,
+        annual_last_reset_year INTEGER NOT NULL,
+        annual_history_json TEXT NOT NULL DEFAULT '[]',
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
     CREATE TABLE IF NOT EXISTS announcement_reads (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         announcement_id INTEGER NOT NULL,
@@ -71,6 +92,11 @@ db.exec(`
         UNIQUE(announcement_id, user_id),
         FOREIGN KEY (announcement_id) REFERENCES announcements(id) ON DELETE CASCADE,
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS sync_meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
     );
 
     CREATE INDEX IF NOT EXISTS idx_overtime_user_date ON overtime_records(user_id, work_date);
@@ -84,6 +110,11 @@ const announcementColumns = db.prepare('PRAGMA table_info(announcements)').all()
 const hasAgreeCount = announcementColumns.some((column) => column.name === 'agree_count');
 const hasDisagreeCount = announcementColumns.some((column) => column.name === 'disagree_count');
 const hasImageData = announcementColumns.some((column) => column.name === 'image_data');
+const overtimeColumns = db.prepare('PRAGMA table_info(overtime_records)').all();
+const hasOvertimeReason = overtimeColumns.some((column) => column.name === 'reason');
+const userProfileColumns = db.prepare('PRAGMA table_info(user_profiles)').all();
+const hasAnnualLastResetYear = userProfileColumns.some((column) => column.name === 'annual_last_reset_year');
+const hasNickname = userProfileColumns.some((column) => column.name === 'nickname');
 if (!hasAgreeCount) {
     db.exec('ALTER TABLE announcements ADD COLUMN agree_count INTEGER NOT NULL DEFAULT 0');
 }
@@ -92,6 +123,29 @@ if (!hasDisagreeCount) {
 }
 if (!hasImageData) {
     db.exec('ALTER TABLE announcements ADD COLUMN image_data TEXT');
+}
+if (!hasOvertimeReason) {
+    db.exec("ALTER TABLE overtime_records ADD COLUMN reason TEXT NOT NULL DEFAULT ''");
+}
+if (!hasAnnualLastResetYear) {
+    db.exec(`
+        DROP TABLE IF EXISTS user_profiles;
+        CREATE TABLE user_profiles (
+            user_id INTEGER PRIMARY KEY,
+            nickname TEXT NOT NULL DEFAULT '',
+            display_name TEXT NOT NULL DEFAULT '',
+            emp_id TEXT NOT NULL DEFAULT '',
+            dept TEXT NOT NULL DEFAULT '',
+            annual_remaining_hours REAL NOT NULL DEFAULT 40,
+            annual_last_reset_year INTEGER NOT NULL,
+            annual_history_json TEXT NOT NULL DEFAULT '[]',
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+    `);
+}
+if (!hasNickname && hasAnnualLastResetYear) {
+    db.exec("ALTER TABLE user_profiles ADD COLUMN nickname TEXT NOT NULL DEFAULT ''");
 }
 
 const defaultAnnouncements = [
@@ -117,29 +171,445 @@ if (countRow.count === 0) {
     insertMany(defaultUsers);
 }
 
+const ensureUserProfilesForAllUsers = db.transaction(() => {
+    const currentYear = new Date().getFullYear();
+    const allUsers = db.prepare('SELECT id, name FROM users ORDER BY id').all();
+    const insertProfile = db.prepare(`
+        INSERT OR IGNORE INTO user_profiles (
+            user_id,
+            nickname,
+            display_name,
+            emp_id,
+            dept,
+            annual_remaining_hours,
+            annual_last_reset_year,
+            annual_history_json
+        ) VALUES (?, '', ?, '', '', ?, ?, '[]')
+    `);
+    const resetAnnual = db.prepare(`
+        UPDATE user_profiles
+        SET annual_remaining_hours = ?,
+            annual_last_reset_year = ?,
+            annual_history_json = '[]',
+            updated_at = CURRENT_TIMESTAMP
+        WHERE user_id = ?
+    `);
+
+    allUsers.forEach((user) => {
+        insertProfile.run(user.id, user.name, DEFAULT_ANNUAL_HOURS, currentYear);
+        const profile = db.prepare('SELECT annual_last_reset_year AS annualLastResetYear FROM user_profiles WHERE user_id = ?').get(user.id);
+        if (!profile || Number(profile.annualLastResetYear) !== currentYear) {
+            resetAnnual.run(DEFAULT_ANNUAL_HOURS, currentYear, user.id);
+        }
+    });
+});
+
+ensureUserProfilesForAllUsers();
+
+db.prepare(`
+    INSERT OR IGNORE INTO sync_meta (key, value)
+    VALUES ('data_change_token', '0-${NODE_ID}')
+`).run();
+
+const sseClients = new Set();
+let peerSyncRunning = false;
+let peerSyncPending = false;
+
+function parseChangeToken(token) {
+    const raw = String(token || '').trim();
+    const dashIndex = raw.indexOf('-');
+    if (!raw || dashIndex <= 0) {
+        return { ts: 0, nodeId: '' };
+    }
+    const ts = Number(raw.slice(0, dashIndex));
+    const nodeId = raw.slice(dashIndex + 1);
+    return {
+        ts: Number.isFinite(ts) ? ts : 0,
+        nodeId
+    };
+}
+
+function isIncomingTokenNewer(incomingToken, currentToken) {
+    const incoming = parseChangeToken(incomingToken);
+    const current = parseChangeToken(currentToken);
+    if (incoming.ts !== current.ts) {
+        return incoming.ts > current.ts;
+    }
+    return String(incoming.nodeId || '') > String(current.nodeId || '');
+}
+
+function getDataChangeToken() {
+    const row = db.prepare("SELECT value FROM sync_meta WHERE key = 'data_change_token'").get();
+    return row?.value || `0-${NODE_ID}`;
+}
+
+function setDataChangeToken(token) {
+    db.prepare(`
+        INSERT INTO sync_meta (key, value)
+        VALUES ('data_change_token', ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    `).run(String(token || `0-${NODE_ID}`));
+}
+
+function markLocalDataChanged() {
+    const nextToken = `${Date.now()}-${NODE_ID}`;
+    setDataChangeToken(nextToken);
+    return nextToken;
+}
+
+function shouldVerifyDataToken(req) {
+    const method = String(req.method || 'GET').toUpperCase();
+    if (!['POST', 'PATCH', 'PUT', 'DELETE'].includes(method)) {
+        return false;
+    }
+    const path = String(req.path || '');
+    if (!path.startsWith('/api/')) {
+        return false;
+    }
+    if (path === '/api/admin/login' || path === '/api/internal/sync/snapshot') {
+        return false;
+    }
+    return true;
+}
+
+function verifyRequestDataToken(req, res) {
+    if (!shouldVerifyDataToken(req)) return true;
+
+    const expectedToken = String(req.headers['x-data-token'] || req.body?.dataToken || '').trim();
+    const currentToken = getDataChangeToken();
+    if (!expectedToken) {
+        res.status(409).json({
+            error: '检测到数据版本冲突，请刷新后重试',
+            code: 'DATA_CONFLICT',
+            currentToken
+        });
+        return false;
+    }
+
+    if (expectedToken !== currentToken) {
+        res.status(409).json({
+            error: '当前页面数据已过期，请刷新后重试',
+            code: 'DATA_CONFLICT',
+            currentToken
+        });
+        return false;
+    }
+    return true;
+}
+
+function emitSyncEvent(event, payload) {
+    const data = `event: ${event}\ndata: ${JSON.stringify(payload || {})}\n\n`;
+    sseClients.forEach((clientRes) => {
+        try {
+            clientRes.write(data);
+        } catch {
+            sseClients.delete(clientRes);
+        }
+    });
+}
+
+function buildSyncSnapshot() {
+    return {
+        users: db.prepare('SELECT id, name, created_at AS createdAt FROM users ORDER BY id').all(),
+        userProfiles: db.prepare(`
+            SELECT
+                user_id AS userId,
+                nickname,
+                display_name AS displayName,
+                emp_id AS empId,
+                dept,
+                annual_remaining_hours AS annualRemainingHours,
+                annual_last_reset_year AS annualLastResetYear,
+                annual_history_json AS annualHistoryJson,
+                updated_at AS updatedAt
+            FROM user_profiles
+            ORDER BY user_id
+        `).all(),
+        overtimeRecords: db.prepare(`
+            SELECT
+                id,
+                user_id AS userId,
+                work_date AS date,
+                type,
+                start_time AS startTime,
+                end_time AS endTime,
+                reason,
+                minutes,
+                amount,
+                created_at AS createdAt
+            FROM overtime_records
+            ORDER BY id
+        `).all(),
+        announcements: db.prepare(`
+            SELECT
+                id,
+                type,
+                content,
+                image_data AS imageData,
+                agree_count AS agreeCount,
+                disagree_count AS disagreeCount,
+                created_at AS createdAt,
+                updated_at AS updatedAt
+            FROM announcements
+            ORDER BY id
+        `).all(),
+        announcementVotes: db.prepare(`
+            SELECT
+                id,
+                announcement_id AS announcementId,
+                user_id AS userId,
+                option,
+                created_at AS createdAt
+            FROM announcement_votes
+            ORDER BY id
+        `).all(),
+        announcementReads: db.prepare(`
+            SELECT
+                id,
+                announcement_id AS announcementId,
+                user_id AS userId,
+                read_at AS readAt
+            FROM announcement_reads
+            ORDER BY id
+        `).all()
+    };
+}
+
+const replaceSnapshotTx = db.transaction((snapshot) => {
+    const payload = snapshot || {};
+    const users = Array.isArray(payload.users) ? payload.users : [];
+    const profiles = Array.isArray(payload.userProfiles) ? payload.userProfiles : [];
+    const records = Array.isArray(payload.overtimeRecords) ? payload.overtimeRecords : [];
+    const announcements = Array.isArray(payload.announcements) ? payload.announcements : [];
+    const votes = Array.isArray(payload.announcementVotes) ? payload.announcementVotes : [];
+    const reads = Array.isArray(payload.announcementReads) ? payload.announcementReads : [];
+
+    db.prepare('DELETE FROM announcement_votes').run();
+    db.prepare('DELETE FROM announcement_reads').run();
+    db.prepare('DELETE FROM overtime_records').run();
+    db.prepare('DELETE FROM user_profiles').run();
+    db.prepare('DELETE FROM announcements').run();
+    db.prepare('DELETE FROM users').run();
+
+    const insertUser = db.prepare('INSERT INTO users (id, name, created_at) VALUES (?, ?, ?)');
+    const insertProfile = db.prepare(`
+        INSERT INTO user_profiles (
+            user_id,
+            nickname,
+            display_name,
+            emp_id,
+            dept,
+            annual_remaining_hours,
+            annual_last_reset_year,
+            annual_history_json,
+            updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    const insertRecord = db.prepare(`
+        INSERT INTO overtime_records (
+            id,
+            user_id,
+            work_date,
+            type,
+            start_time,
+            end_time,
+            reason,
+            minutes,
+            amount,
+            created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    const insertAnnouncement = db.prepare(`
+        INSERT INTO announcements (
+            id,
+            type,
+            content,
+            image_data,
+            agree_count,
+            disagree_count,
+            created_at,
+            updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    const insertVote = db.prepare(`
+        INSERT INTO announcement_votes (
+            id,
+            announcement_id,
+            user_id,
+            option,
+            created_at
+        ) VALUES (?, ?, ?, ?, ?)
+    `);
+    const insertRead = db.prepare(`
+        INSERT INTO announcement_reads (
+            id,
+            announcement_id,
+            user_id,
+            read_at
+        ) VALUES (?, ?, ?, ?)
+    `);
+
+    users.forEach((row) => {
+        insertUser.run(row.id, row.name, row.createdAt || null);
+    });
+    profiles.forEach((row) => {
+        insertProfile.run(
+            row.userId,
+            row.nickname || '',
+            row.displayName || '',
+            row.empId || '',
+            row.dept || '',
+            Number(row.annualRemainingHours) || 0,
+            Number(row.annualLastResetYear) || new Date().getFullYear(),
+            row.annualHistoryJson || '[]',
+            row.updatedAt || null
+        );
+    });
+    records.forEach((row) => {
+        insertRecord.run(
+            row.id,
+            row.userId,
+            row.date,
+            row.type,
+            row.startTime,
+            row.endTime,
+            row.reason || '',
+            Number(row.minutes) || 0,
+            Number(row.amount) || 0,
+            row.createdAt || null
+        );
+    });
+    announcements.forEach((row) => {
+        insertAnnouncement.run(
+            row.id,
+            row.type,
+            row.content,
+            row.imageData || null,
+            Number(row.agreeCount) || 0,
+            Number(row.disagreeCount) || 0,
+            row.createdAt || null,
+            row.updatedAt || null
+        );
+    });
+    votes.forEach((row) => {
+        insertVote.run(row.id, row.announcementId, row.userId, row.option, row.createdAt || null);
+    });
+    reads.forEach((row) => {
+        insertRead.run(row.id, row.announcementId, row.userId, row.readAt || null);
+    });
+});
+
+async function pushSnapshotToPeer(reason) {
+    if (!ENABLE_PEER_SYNC) return;
+    const token = getDataChangeToken();
+    const body = {
+        sourceNodeId: NODE_ID,
+        reason: String(reason || 'unknown'),
+        token,
+        generatedAt: Date.now(),
+        snapshot: buildSyncSnapshot()
+    };
+
+    try {
+        const response = await fetch(`${SYNC_PEER_URL}/api/internal/sync/snapshot`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Sync-Secret': SYNC_SHARED_SECRET
+            },
+            body: JSON.stringify(body)
+        });
+        if (!response.ok) {
+            const text = await response.text().catch(() => '');
+            console.error('[sync] peer rejected snapshot:', response.status, text);
+        }
+    } catch (error) {
+        console.error('[sync] push snapshot failed:', error.message || error);
+    }
+}
+
+function schedulePeerSync(reason) {
+    if (!ENABLE_PEER_SYNC) return;
+    peerSyncPending = true;
+    if (peerSyncRunning) return;
+
+    peerSyncRunning = true;
+    (async () => {
+        while (peerSyncPending) {
+            peerSyncPending = false;
+            await pushSnapshotToPeer(reason);
+        }
+        peerSyncRunning = false;
+    })().catch((error) => {
+        peerSyncRunning = false;
+        console.error('[sync] scheduler error:', error.message || error);
+    });
+}
+
+function notifyDataChanged(reason, options = {}) {
+    const skipPeerSync = Boolean(options.skipPeerSync);
+    const token = String(options.token || markLocalDataChanged());
+    emitSyncEvent('data-changed', {
+        reason: String(reason || 'unknown'),
+        token,
+        nodeId: NODE_ID,
+        at: Date.now()
+    });
+    if (!skipPeerSync) {
+        schedulePeerSync(reason);
+    }
+}
+
+function verifySyncSecret(req) {
+    if (!SYNC_SHARED_SECRET) return false;
+    const incoming = String(req.headers['x-sync-secret'] || '').trim();
+    if (!incoming) return false;
+    const incomingBuffer = Buffer.from(incoming);
+    const expectedBuffer = Buffer.from(SYNC_SHARED_SECRET);
+    if (incomingBuffer.length !== expectedBuffer.length) return false;
+    return crypto.timingSafeEqual(incomingBuffer, expectedBuffer);
+}
+
 if (!process.env.ADMIN_PASSWORD) {
     console.warn('未设置 ADMIN_PASSWORD，当前默认管理员密码为：admin123456，请尽快修改。');
 }
 
-app.use(express.json({ limit: '15mb' }));
+app.use(express.json({ limit: '30mb' }));
+
+app.use((req, res, next) => {
+    if (!verifyRequestDataToken(req, res)) {
+        return;
+    }
+    next();
+});
+
+function sendNoCacheFile(res, filePath, contentType) {
+    if (contentType) {
+        res.type(contentType);
+    }
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.set('Pragma', 'no-cache');
+    res.set('Expires', '0');
+    res.sendFile(filePath);
+}
 
 app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, 'index.html'));
+    sendNoCacheFile(res, path.join(__dirname, 'index.html'));
 });
 
 app.get('/index.html', (req, res) => {
-    res.sendFile(path.join(__dirname, 'index.html'));
+    sendNoCacheFile(res, path.join(__dirname, 'index.html'));
 });
 
 app.get('/app.js', (req, res) => {
-    res.type('application/javascript');
-    res.sendFile(path.join(__dirname, 'app.js'));
+    sendNoCacheFile(res, path.join(__dirname, 'app.js'), 'application/javascript');
 });
 
 app.get('/ai-directory-data.js', (req, res) => {
-    res.type('application/javascript');
-    res.sendFile(path.join(__dirname, 'ai-directory-data.js'));
+    sendNoCacheFile(res, path.join(__dirname, 'ai-directory-data.js'), 'application/javascript');
 });
+
+app.use('/assets/fonts', express.static(path.join(__dirname, 'assets/fonts')));
 
 app.get('/api/external/wallpaper/sources', (req, res) => {
     const enabledSources = (Array.isArray(WALLPAPER_SOURCES) ? WALLPAPER_SOURCES : [])
@@ -806,7 +1276,48 @@ function getAllUsers() {
     return db.prepare('SELECT id, name, created_at AS createdAt FROM users ORDER BY id').all();
 }
 
+function parseAnnualHistory(historyJson) {
+    if (!historyJson) return [];
+    try {
+        const parsed = JSON.parse(historyJson);
+        return Array.isArray(parsed) ? parsed : [];
+    } catch {
+        return [];
+    }
+}
+
+function getNormalizedUserProfile(userId) {
+    const row = db.prepare(`
+        SELECT
+            user_id AS userId,
+            nickname,
+            display_name AS displayName,
+            emp_id AS empId,
+            dept,
+            annual_remaining_hours AS annualRemainingHours,
+            annual_last_reset_year AS annualLastResetYear,
+            annual_history_json AS annualHistoryJson,
+            updated_at AS updatedAt
+        FROM user_profiles
+        WHERE user_id = ?
+    `).get(userId);
+
+    if (!row) return null;
+    return {
+        userId: row.userId,
+        nickname: row.nickname || '',
+        displayName: row.displayName || '',
+        empId: row.empId || '',
+        dept: row.dept || '',
+        annualRemainingHours: Number(row.annualRemainingHours) || 0,
+        annualLastResetYear: Number(row.annualLastResetYear) || new Date().getFullYear(),
+        annualHistory: parseAnnualHistory(row.annualHistoryJson),
+        updatedAt: row.updatedAt
+    };
+}
+
 function buildBootstrapPayload(req) {
+    ensureUserProfilesForAllUsers();
     const users = getAllUsers();
     const records = db.prepare(`
         SELECT
@@ -816,6 +1327,7 @@ function buildBootstrapPayload(req) {
             type,
             start_time AS startTime,
             end_time AS endTime,
+            reason,
             minutes,
             amount,
             created_at AS createdAt
@@ -877,16 +1389,103 @@ function buildBootstrapPayload(req) {
         overtimeData[userKey][record.date].push(record);
     });
 
+    const profileRows = db.prepare(`
+        SELECT
+            user_id AS userId,
+            nickname,
+            display_name AS displayName,
+            emp_id AS empId,
+            dept,
+            annual_remaining_hours AS annualRemainingHours,
+            annual_last_reset_year AS annualLastResetYear,
+            annual_history_json AS annualHistoryJson,
+            updated_at AS updatedAt
+        FROM user_profiles
+        ORDER BY user_id
+    `).all();
+
+    const userProfiles = {};
+    profileRows.forEach((row) => {
+        userProfiles[String(row.userId)] = {
+            userId: row.userId,
+            nickname: row.nickname || '',
+            displayName: row.displayName || '',
+            empId: row.empId || '',
+            dept: row.dept || '',
+            annualRemainingHours: Number(row.annualRemainingHours) || 0,
+            annualLastResetYear: Number(row.annualLastResetYear) || new Date().getFullYear(),
+            annualHistory: parseAnnualHistory(row.annualHistoryJson),
+            updatedAt: row.updatedAt
+        };
+    });
+
     return {
         users,
         overtimeData,
+        userProfiles,
         announcements: announcementsWithReads,
-        isAdmin: isAdminRequest(req)
+        isAdmin: isAdminRequest(req),
+        dataToken: getDataChangeToken()
     };
 }
 
 app.get('/api/bootstrap', (req, res) => {
     res.json(buildBootstrapPayload(req));
+});
+
+app.get('/api/stream', (req, res) => {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders();
+
+    res.write(`event: connected\ndata: ${JSON.stringify({ nodeId: NODE_ID, token: getDataChangeToken() })}\n\n`);
+    sseClients.add(res);
+
+    const heartbeat = setInterval(() => {
+        try {
+            res.write('event: ping\\ndata: {}\\n\\n');
+        } catch {
+            clearInterval(heartbeat);
+            sseClients.delete(res);
+        }
+    }, 20000);
+
+    req.on('close', () => {
+        clearInterval(heartbeat);
+        sseClients.delete(res);
+    });
+});
+
+app.post('/api/internal/sync/snapshot', (req, res) => {
+    if (!verifySyncSecret(req)) {
+        return res.status(401).json({ error: '同步鉴权失败' });
+    }
+
+    const sourceNodeId = String(req.body?.sourceNodeId || '').trim();
+    const incomingToken = String(req.body?.token || '').trim();
+    const snapshot = req.body?.snapshot;
+    if (!sourceNodeId || !incomingToken || !snapshot || typeof snapshot !== 'object') {
+        return res.status(400).json({ error: '同步负载无效' });
+    }
+    if (sourceNodeId === NODE_ID) {
+        return res.json({ skipped: true, reason: 'self' });
+    }
+
+    const currentToken = getDataChangeToken();
+    if (!isIncomingTokenNewer(incomingToken, currentToken)) {
+        return res.json({ skipped: true, reason: 'stale', currentToken });
+    }
+
+    try {
+        replaceSnapshotTx(snapshot);
+        setDataChangeToken(incomingToken);
+        notifyDataChanged('peer-sync-applied', { skipPeerSync: true, token: incomingToken });
+        return res.json({ ok: true, token: incomingToken });
+    } catch (error) {
+        console.error('[sync] apply snapshot failed:', error);
+        return res.status(500).json({ error: '同步落库失败' });
+    }
 });
 
 app.get('/api/admin/status', (req, res) => {
@@ -902,17 +1501,42 @@ app.post('/api/admin/login', (req, res) => {
 });
 
 app.post('/api/users', requireAdmin, (req, res) => {
-    const name = String(req.body?.name || '').trim();
-    if (!name) {
-        return res.status(400).json({ error: '用户名称不能为空' });
+    const nickname = String(req.body?.nickname || req.body?.name || '').trim();
+    const displayName = String(req.body?.displayName || nickname || '').trim();
+    const empId = String(req.body?.empId || '').trim();
+    const dept = String(req.body?.dept || '').trim();
+    if (!nickname) {
+        return res.status(400).json({ error: '主页昵称不能为空' });
     }
-    if (name.length > 20) {
-        return res.status(400).json({ error: '用户名称不能超过20个字符' });
+    if (nickname.length > 30) {
+        return res.status(400).json({ error: '主页昵称不能超过30个字符' });
+    }
+    if (displayName.length > 30) {
+        return res.status(400).json({ error: '打印姓名不能超过30个字符' });
+    }
+    if (empId.length > 30) {
+        return res.status(400).json({ error: '工号不能超过30个字符' });
+    }
+    if (dept.length > 60) {
+        return res.status(400).json({ error: '部门不能超过60个字符' });
     }
 
     try {
-        const result = db.prepare('INSERT INTO users (name) VALUES (?)').run(name);
+        const result = db.prepare('INSERT INTO users (name) VALUES (?)').run(nickname);
+        db.prepare(`
+            INSERT OR IGNORE INTO user_profiles (
+                user_id,
+                nickname,
+                display_name,
+                emp_id,
+                dept,
+                annual_remaining_hours,
+                annual_last_reset_year,
+                annual_history_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, '[]')
+        `).run(result.lastInsertRowid, nickname, displayName, empId, dept, DEFAULT_ANNUAL_HOURS, new Date().getFullYear());
         const user = db.prepare('SELECT id, name, created_at AS createdAt FROM users WHERE id = ?').get(result.lastInsertRowid);
+        notifyDataChanged('user-created');
         res.status(201).json(user);
     } catch (error) {
         if (String(error.message).includes('UNIQUE')) {
@@ -925,15 +1549,27 @@ app.post('/api/users', requireAdmin, (req, res) => {
 
 app.patch('/api/users/:id', requireAdmin, (req, res) => {
     const userId = Number(req.params.id);
-    const name = String(req.body?.name || '').trim();
+    const nickname = String(req.body?.nickname || req.body?.name || '').trim();
+    const displayName = String(req.body?.displayName || nickname || '').trim();
+    const empId = String(req.body?.empId || '').trim();
+    const dept = String(req.body?.dept || '').trim();
     if (!Number.isInteger(userId) || userId <= 0) {
         return res.status(400).json({ error: '用户 ID 无效' });
     }
-    if (!name) {
-        return res.status(400).json({ error: '用户名称不能为空' });
+    if (!nickname) {
+        return res.status(400).json({ error: '主页昵称不能为空' });
     }
-    if (name.length > 20) {
-        return res.status(400).json({ error: '用户名称不能超过20个字符' });
+    if (nickname.length > 30) {
+        return res.status(400).json({ error: '主页昵称不能超过30个字符' });
+    }
+    if (displayName.length > 30) {
+        return res.status(400).json({ error: '打印姓名不能超过30个字符' });
+    }
+    if (empId.length > 30) {
+        return res.status(400).json({ error: '工号不能超过30个字符' });
+    }
+    if (dept.length > 60) {
+        return res.status(400).json({ error: '部门不能超过60个字符' });
     }
 
     const user = db.prepare('SELECT id, name FROM users WHERE id = ?').get(userId);
@@ -942,8 +1578,30 @@ app.patch('/api/users/:id', requireAdmin, (req, res) => {
     }
 
     try {
-        db.prepare('UPDATE users SET name = ? WHERE id = ?').run(name, userId);
+        db.prepare('UPDATE users SET name = ? WHERE id = ?').run(nickname, userId);
+        db.prepare(`
+            INSERT OR IGNORE INTO user_profiles (
+                user_id,
+                nickname,
+                display_name,
+                emp_id,
+                dept,
+                annual_remaining_hours,
+                annual_last_reset_year,
+                annual_history_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, '[]')
+        `).run(userId, nickname, displayName, empId, dept, DEFAULT_ANNUAL_HOURS, new Date().getFullYear());
+        db.prepare(`
+            UPDATE user_profiles
+            SET nickname = ?,
+                display_name = ?,
+                emp_id = ?,
+                dept = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE user_id = ?
+        `).run(nickname, displayName, empId, dept, userId);
         const updatedUser = db.prepare('SELECT id, name, created_at AS createdAt FROM users WHERE id = ?').get(userId);
+        notifyDataChanged('user-updated');
         res.json(updatedUser);
     } catch (error) {
         if (String(error.message).includes('UNIQUE')) {
@@ -966,7 +1624,185 @@ app.delete('/api/users/:id', requireAdmin, (req, res) => {
     }
 
     db.prepare('DELETE FROM users WHERE id = ?').run(userId);
+    notifyDataChanged('user-deleted');
     res.json({ success: true });
+});
+
+app.patch('/api/users/:id/profile', (req, res) => {
+    const userId = Number(req.params.id);
+    const nickname = String(req.body?.nickname || '').trim();
+    const displayName = String(req.body?.displayName || '').trim();
+    const empId = String(req.body?.empId || '').trim();
+    const dept = String(req.body?.dept || '').trim();
+
+    if (!Number.isInteger(userId) || userId <= 0) {
+        return res.status(400).json({ error: '用户 ID 无效' });
+    }
+    if (nickname.length > 30) {
+        return res.status(400).json({ error: '主页昵称不能超过30个字符' });
+    }
+    if (displayName.length > 30) {
+        return res.status(400).json({ error: '姓名不能超过30个字符' });
+    }
+    if (empId.length > 30) {
+        return res.status(400).json({ error: '工号不能超过30个字符' });
+    }
+    if (dept.length > 60) {
+        return res.status(400).json({ error: '部门不能超过60个字符' });
+    }
+
+    const user = db.prepare('SELECT id, name FROM users WHERE id = ?').get(userId);
+    if (!user) {
+        return res.status(404).json({ error: '用户不存在' });
+    }
+
+    db.prepare(`
+        INSERT OR IGNORE INTO user_profiles (
+            user_id,
+            nickname,
+            display_name,
+            emp_id,
+            dept,
+            annual_remaining_hours,
+            annual_last_reset_year,
+            annual_history_json
+        ) VALUES (?, '', ?, '', '', ?, ?, '[]')
+    `).run(userId, user.name, DEFAULT_ANNUAL_HOURS, new Date().getFullYear());
+
+    db.prepare(`
+        UPDATE user_profiles
+        SET display_name = ?,
+            nickname = ?,
+            emp_id = ?,
+            dept = ?,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE user_id = ?
+    `).run(displayName, nickname, empId, dept, userId);
+
+    notifyDataChanged('profile-updated');
+    return res.json(getNormalizedUserProfile(userId));
+});
+
+app.post('/api/users/:id/annual/use', (req, res) => {
+    const userId = Number(req.params.id);
+    const hours = Number(req.body?.hours);
+
+    if (!Number.isInteger(userId) || userId <= 0) {
+        return res.status(400).json({ error: '用户 ID 无效' });
+    }
+    if (!Number.isFinite(hours) || hours <= 0) {
+        return res.status(400).json({ error: '使用小时数必须大于0' });
+    }
+
+    const user = db.prepare('SELECT id, name FROM users WHERE id = ?').get(userId);
+    if (!user) {
+        return res.status(404).json({ error: '用户不存在' });
+    }
+
+    ensureUserProfilesForAllUsers();
+    const profile = getNormalizedUserProfile(userId);
+    if (!profile) {
+        return res.status(500).json({ error: '读取年假数据失败' });
+    }
+    if (hours > profile.annualRemainingHours) {
+        return res.status(400).json({ error: '年假余额不足' });
+    }
+
+    const annualHistory = Array.isArray(profile.annualHistory) ? [...profile.annualHistory] : [];
+    annualHistory.push({ used: Number(hours.toFixed(2)), timestamp: Date.now() });
+    const nextRemaining = Number((profile.annualRemainingHours - hours).toFixed(2));
+
+    db.prepare(`
+        UPDATE user_profiles
+        SET annual_remaining_hours = ?,
+            annual_history_json = ?,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE user_id = ?
+    `).run(nextRemaining, JSON.stringify(annualHistory), userId);
+
+    notifyDataChanged('annual-used');
+    return res.json(getNormalizedUserProfile(userId));
+});
+
+app.post('/api/users/:id/annual/undo', (req, res) => {
+    const userId = Number(req.params.id);
+    if (!Number.isInteger(userId) || userId <= 0) {
+        return res.status(400).json({ error: '用户 ID 无效' });
+    }
+
+    const user = db.prepare('SELECT id FROM users WHERE id = ?').get(userId);
+    if (!user) {
+        return res.status(404).json({ error: '用户不存在' });
+    }
+
+    ensureUserProfilesForAllUsers();
+    const profile = getNormalizedUserProfile(userId);
+    if (!profile) {
+        return res.status(500).json({ error: '读取年假数据失败' });
+    }
+    const annualHistory = Array.isArray(profile.annualHistory) ? [...profile.annualHistory] : [];
+    if (!annualHistory.length) {
+        return res.status(400).json({ error: '没有可撤销的年假记录' });
+    }
+
+    const last = annualHistory.pop();
+    const undoHours = Number(last?.used) || 0;
+    const nextRemaining = Number((profile.annualRemainingHours + undoHours).toFixed(2));
+
+    db.prepare(`
+        UPDATE user_profiles
+        SET annual_remaining_hours = ?,
+            annual_history_json = ?,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE user_id = ?
+    `).run(nextRemaining, JSON.stringify(annualHistory), userId);
+
+    notifyDataChanged('annual-undo');
+    return res.json(getNormalizedUserProfile(userId));
+});
+
+app.post('/api/users/:id/annual/reset', (req, res) => {
+    const userId = Number(req.params.id);
+    const daysRaw = req.body?.days;
+    const days = daysRaw === undefined || daysRaw === null || daysRaw === '' ? DEFAULT_ANNUAL_DAYS : Number(daysRaw);
+
+    if (!Number.isInteger(userId) || userId <= 0) {
+        return res.status(400).json({ error: '用户 ID 无效' });
+    }
+    if (!Number.isFinite(days) || days < 0 || days > 100) {
+        return res.status(400).json({ error: '年假天数范围应为 0-100' });
+    }
+
+    const user = db.prepare('SELECT id FROM users WHERE id = ?').get(userId);
+    if (!user) {
+        return res.status(404).json({ error: '用户不存在' });
+    }
+
+    const currentYear = new Date().getFullYear();
+    const resetHours = Number((days * ANNUAL_HOURS_PER_DAY).toFixed(2));
+    db.prepare(`
+        INSERT OR IGNORE INTO user_profiles (
+            user_id,
+            display_name,
+            emp_id,
+            dept,
+            annual_remaining_hours,
+            annual_last_reset_year,
+            annual_history_json
+        ) VALUES (?, '', '', '', ?, ?, '[]')
+    `).run(userId, resetHours, currentYear);
+
+    db.prepare(`
+        UPDATE user_profiles
+        SET annual_remaining_hours = ?,
+            annual_last_reset_year = ?,
+            annual_history_json = '[]',
+            updated_at = CURRENT_TIMESTAMP
+        WHERE user_id = ?
+    `).run(resetHours, currentYear, userId);
+
+    notifyDataChanged('annual-reset');
+    return res.json(getNormalizedUserProfile(userId));
 });
 
 app.post('/api/overtime', (req, res) => {
@@ -975,6 +1811,7 @@ app.post('/api/overtime', (req, res) => {
     const type = String(req.body?.type || '').trim();
     const startTime = String(req.body?.startTime || '').trim();
     const endTime = String(req.body?.endTime || '').trim();
+    const reason = String(req.body?.reason || '').trim();
 
     if (!Number.isInteger(userId) || userId <= 0) {
         return res.status(400).json({ error: '用户 ID 无效' });
@@ -987,6 +1824,9 @@ app.post('/api/overtime', (req, res) => {
     }
     if (!isValidTimeString(startTime) || !isValidTimeString(endTime)) {
         return res.status(400).json({ error: '时间格式无效' });
+    }
+    if (reason.length > 120) {
+        return res.status(400).json({ error: '加班事由不能超过120个字符' });
     }
 
     const user = db.prepare('SELECT id FROM users WHERE id = ?').get(userId);
@@ -1005,9 +1845,9 @@ app.post('/api/overtime', (req, res) => {
     db.prepare('DELETE FROM overtime_records WHERE user_id = ? AND work_date = ?').run(userId, date);
     
     const result = db.prepare(`
-        INSERT INTO overtime_records (user_id, work_date, type, start_time, end_time, minutes, amount)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(userId, date, type, startTime, endTime, minutes, amount);
+        INSERT INTO overtime_records (user_id, work_date, type, start_time, end_time, reason, minutes, amount)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(userId, date, type, startTime, endTime, reason, minutes, amount);
 
     const record = db.prepare(`
         SELECT
@@ -1017,6 +1857,7 @@ app.post('/api/overtime', (req, res) => {
             type,
             start_time AS startTime,
             end_time AS endTime,
+            reason,
             minutes,
             amount,
             created_at AS createdAt
@@ -1024,6 +1865,7 @@ app.post('/api/overtime', (req, res) => {
         WHERE id = ?
     `).get(result.lastInsertRowid);
 
+    notifyDataChanged('overtime-upsert');
     res.status(201).json(record);
 });
 
@@ -1037,6 +1879,7 @@ app.delete('/api/overtime/:id', (req, res) => {
     if (!result.changes) {
         return res.status(404).json({ error: '记录不存在' });
     }
+    notifyDataChanged('overtime-deleted');
     res.json({ success: true });
 });
 
@@ -1051,6 +1894,7 @@ app.post('/api/overtime/clear-day', (req, res) => {
     }
 
     db.prepare('DELETE FROM overtime_records WHERE user_id = ? AND work_date = ?').run(userId, date);
+    notifyDataChanged('overtime-day-cleared');
     res.json({ success: true });
 });
 
@@ -1156,6 +2000,7 @@ app.patch('/api/announcements/:id', requireAdmin, (req, res) => {
         FROM announcements
         WHERE id = ?
     `).get(announcementId);
+    notifyDataChanged('announcement-updated');
     res.json(updated);
 });
 
@@ -1196,6 +2041,7 @@ app.post('/api/announcements', requireAdmin, (req, res) => {
             FROM announcements
             WHERE id = ?
         `).get(result.lastInsertRowid);
+        notifyDataChanged('announcement-created');
         res.status(201).json(announcement);
     } catch (error) {
         console.error(error);
@@ -1214,6 +2060,7 @@ app.delete('/api/announcements/:id', requireAdmin, (req, res) => {
     if (!result.changes) {
         return res.status(404).json({ error: '公告不存在' });
     }
+    notifyDataChanged('announcement-deleted');
     res.json({ success: true });
 });
 
@@ -1282,6 +2129,7 @@ app.post('/api/announcements/:id/vote', (req, res) => {
         WHERE id = ?
     `).get(announcementId);
 
+    notifyDataChanged('announcement-voted');
     res.json(updated);
 });
 
@@ -1322,6 +2170,7 @@ app.post('/api/announcements/:id/read', (req, res) => {
             ORDER BY ar.read_at ASC
         `).all(announcementId);
 
+        notifyDataChanged('announcement-read');
         res.json({ success: true, readUsers });
     } catch (error) {
         console.error(error);
@@ -1396,4 +2245,6 @@ app.get('/api/announcements/:id/details', (req, res) => {
 app.listen(PORT, () => {
     console.log(`共享加班系统服务已启动: http://localhost:${PORT}`);
     console.log(`数据库文件: ${DB_PATH}`);
+    console.log(`节点标识: ${NODE_ID}`);
+    console.log(`双机同步: ${ENABLE_PEER_SYNC ? `已启用 -> ${SYNC_PEER_URL}` : '未启用（需配置 SYNC_PEER_URL + SYNC_SHARED_SECRET）'}`);
 });

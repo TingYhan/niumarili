@@ -360,6 +360,86 @@
             line-height: 1.55;
         }
 
+        .profile-panel-summary {
+            margin-top: 10px;
+            padding: 10px 12px;
+            border-radius: 10px;
+            border: 1px solid #dbeafe;
+            background: #f8fbff;
+            font-size: 0.86rem;
+            color: #334155;
+        }
+
+        .profile-history-list {
+            margin-top: 10px;
+            max-height: 180px;
+            overflow-y: auto;
+            border: 1px solid #e2e8f0;
+            border-radius: 10px;
+            padding: 8px;
+            background: #f8fafc;
+        }
+
+        .profile-history-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 4px;
+            border-bottom: 1px dashed #d6deeb;
+            color: #475569;
+            font-size: 0.82rem;
+        }
+
+        .profile-history-item:last-child {
+            border-bottom: none;
+        }
+
+        .all-users-overview-title {
+            margin-top: 14px;
+            margin-bottom: 8px;
+            font-size: 0.9rem;
+            color: #1f2937;
+            font-weight: 700;
+        }
+
+        .all-users-overview-grid {
+            margin-top: 8px;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 10px;
+        }
+
+        .all-users-overview-card {
+            border: 1px solid #dbe4f0;
+            border-radius: 12px;
+            background: #ffffff;
+            padding: 10px;
+        }
+
+        .all-users-overview-name {
+            font-weight: 800;
+            color: #1e3a8a;
+            margin-bottom: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+        }
+
+        .all-users-overview-annual {
+            color: #0f766e;
+            font-size: 0.86rem;
+            font-weight: 700;
+        }
+
+        .all-users-overview-meta {
+            color: #475569;
+            font-size: 0.8rem;
+            line-height: 1.5;
+            word-break: break-all;
+        }
+
         .stats-container {
             margin-bottom: 20px;
             padding: 20px;
@@ -367,8 +447,8 @@
 
         .stats-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-            gap: 20px;
+            grid-template-columns: repeat(5, minmax(0, 1fr));
+            gap: 14px;
             margin-top: 10px;
         }
 
@@ -1277,6 +1357,10 @@
             .app-container {
                 grid-template-columns: 1fr;
             }
+
+            .stats-grid {
+                grid-template-columns: repeat(3, minmax(0, 1fr));
+            }
         }
 
         @media (max-width: 768px) {
@@ -1314,6 +1398,16 @@
 
             .header-right, .top-toolbar {
                 justify-content: center;
+            }
+
+            .stats-grid {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+        }
+
+        @media (max-width: 560px) {
+            .stats-grid {
+                grid-template-columns: 1fr;
             }
 
             .compare-table th, .compare-table td {
@@ -1403,6 +1497,17 @@
                 <div class="stat-value money-value" id="yearlyAmount">0.00</div>
                 <div class="stat-label">元</div>
             </div>
+            <div class="stat-card">
+                <div class="stat-icon"><i class="fas fa-umbrella-beach"></i></div>
+                <div class="stat-label">剩余年假</div>
+                <div class="stat-value" id="annualLeaveRemaining">0</div>
+                <div class="stat-label">小时</div>
+                <div class="btn-group" style="margin-top: 10px; justify-content: center; flex-wrap: wrap; gap: 8px;">
+                    <button type="button" class="btn btn-primary btn-sm" id="useAnnualBtn"><i class="fas fa-hourglass-half"></i> 使用</button>
+                    <button type="button" class="btn btn-rename btn-sm" id="undoAnnualBtn"><i class="fas fa-rotate-left"></i> 撤销</button>
+                    <button type="button" class="btn btn-delete btn-sm" id="resetAnnualBtn"><i class="fas fa-repeat"></i> 重置</button>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -1447,6 +1552,10 @@
                         <input type="time" class="input-field" id="endTime" value="20:30">
                     </div>
                 </div>
+                <div class="form-group">
+                    <label for="overtimeReason">加班事由（用于申请表）</label>
+                    <textarea id="overtimeReason" class="input-field" maxlength="120" placeholder="例如：线上故障修复、版本发布保障、客户需求加急" style="resize: vertical; min-height: 80px;"></textarea>
+                </div>
                 <div class="result-card">
                     <div class="result-row">
                         <div class="result-item">
@@ -1462,6 +1571,10 @@
                 <div class="btn-group">
                     <button class="btn btn-primary" id="addOvertimeBtn"><i class="fas fa-plus-circle"></i> 添加加班记录</button>
                     <button class="btn btn-delete" id="clearAllBtn"><i class="fas fa-trash-alt"></i> 清空当天记录</button>
+                </div>
+                <div class="btn-group" style="margin-top: 10px;">
+                    <button class="btn btn-rename" id="exportCurrentPdfBtn"><i class="fas fa-file-pdf"></i> 导出当前人员申请表</button>
+                    <button class="btn btn-rename" id="exportAllPdfBtn"><i class="fas fa-file-export"></i> 导出全员申请表</button>
                 </div>
             </div>
             <div class="countdown-card" id="countdownCard" style="display: none;">
@@ -1567,36 +1680,31 @@
         <div class="modal-body">
             <form class="admin-form" id="addUserForm">
                 <div class="form-group">
-                    <label for="newUserName">新增用户名称</label>
-                    <input type="text" id="newUserName" class="input-field" maxlength="20" placeholder="例如：张三">
+                    <label for="userNickname">主页昵称</label>
+                    <input type="text" id="userNickname" class="input-field" maxlength="30" placeholder="例如：牛马王">
                 </div>
-                <button type="submit" class="btn btn-primary"><i class="fas fa-user-plus"></i> 新增用户</button>
+                <div class="form-group">
+                    <label for="userDisplayName">打印姓名</label>
+                    <input type="text" id="userDisplayName" class="input-field" maxlength="30" placeholder="例如：任增强">
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="userEmpId">工号</label>
+                        <input type="text" id="userEmpId" class="input-field" maxlength="30" placeholder="例如：T1762">
+                    </div>
+                    <div class="form-group">
+                        <label for="userDept">部门</label>
+                        <input type="text" id="userDept" class="input-field" maxlength="60" placeholder="例如：天乐达软件部">
+                    </div>
+                </div>
+                <div class="btn-group" style="margin-top: 10px;">
+                    <button type="submit" class="btn btn-primary" id="saveUserBtn"><i class="fas fa-user-plus"></i> 新增用户</button>
+                    <button type="button" class="btn btn-rename" id="cancelEditUserBtn" style="display:none;"><i class="fas fa-xmark"></i> 取消编辑</button>
+                </div>
             </form>
-            <div class="helper-text" style="margin-top: 16px;">可直接重命名用户；删除用户会同时删除该用户的所有加班记录。</div>
+            <div class="helper-text" style="margin-top: 16px;">新增和编辑都按用户资料保存：主页昵称、打印姓名、工号、部门。删除用户会同时删除该用户的所有加班记录。</div>
             <div class="danger-text">允许删除全部用户；如果删空了，请直接在上方重新新增新用户。</div>
             <div class="user-manager-list" id="userManagerList"></div>
-        </div>
-    </div>
-</div>
-
-<div id="editBannerModal" class="modal-overlay">
-    <div class="modal-container small">
-        <div class="modal-header">
-            <h3><i class="fas fa-banner"></i> 编辑条幅</h3>
-            <button class="close-modal" data-close-modal="editBannerModal">&times;</button>
-        </div>
-        <div class="modal-body">
-            <form class="admin-form" id="editBannerForm">
-                <div class="form-group">
-                    <label for="bannerType">条幅位置</label>
-                    <input type="text" id="bannerType" class="input-field" readonly>
-                </div>
-                <div class="form-group">
-                    <label for="bannerContent">条幅文案（最多50字）</label>
-                    <input type="text" id="bannerContent" class="input-field" maxlength="50" placeholder="输入条幅文案">
-                </div>
-                <button type="submit" class="btn btn-primary"><i class="fas fa-save"></i> 保存</button>
-            </form>
         </div>
     </div>
 </div>
@@ -1654,7 +1762,62 @@
     </div>
 </div>
 
+<div id="exportPdfModal" class="modal-overlay">
+    <div class="modal-container small">
+        <div class="modal-header">
+            <h3><i class="fas fa-file-pdf"></i> 导出加班申请表</h3>
+            <button class="close-modal" data-close-modal="exportPdfModal">&times;</button>
+        </div>
+        <div class="modal-body">
+            <div class="admin-form">
+                <div class="form-group">
+                    <label>导出范围</label>
+                    <div class="form-row">
+                        <label style="display:flex; align-items:center; gap:8px; cursor:pointer;"><input type="radio" name="exportScope" id="exportScopeCurrent" value="current" checked> 当前人员累计</label>
+                        <label style="display:flex; align-items:center; gap:8px; cursor:pointer;"><input type="radio" name="exportScope" id="exportScopeAll" value="all"> 全员汇总到一个PDF</label>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="pdfName">姓名</label>
+                    <input type="text" id="pdfName" class="input-field" maxlength="30" placeholder="当前人员姓名（全员模式自动按用户匹配）">
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="pdfEmpId">工号</label>
+                        <input type="text" id="pdfEmpId" class="input-field" maxlength="30" placeholder="例如 T1762">
+                    </div>
+                    <div class="form-group">
+                        <label for="pdfDept">部门</label>
+                        <input type="text" id="pdfDept" class="input-field" maxlength="40" placeholder="例如 天乐达软件部">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="pdfDefaultReason">默认加班事由（记录未填时使用）</label>
+                    <input type="text" id="pdfDefaultReason" class="input-field" maxlength="120" placeholder="例如：项目发布保障">
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="pdfStartDate">开始日期</label>
+                        <input type="date" id="pdfStartDate" class="input-field">
+                    </div>
+                    <div class="form-group">
+                        <label for="pdfEndDate">结束日期</label>
+                        <input type="date" id="pdfEndDate" class="input-field">
+                    </div>
+                </div>
+                <div class="helper-text">提示：导出的每条加班记录会生成一张“加班申请单”，样式按纸质表格布局。</div>
+                <div class="btn-group" style="margin-top: 12px;">
+                    <button type="button" class="btn btn-primary" id="savePdfBtn"><i class="fas fa-download"></i> 保存PDF</button>
+                    <button type="button" class="btn btn-rename" id="printPdfBtn"><i class="fas fa-print"></i> 打开打印</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
 <script src="./ai-directory-data.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="./app.js"></script>
 </body>
 </html>
